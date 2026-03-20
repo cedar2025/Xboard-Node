@@ -1,6 +1,7 @@
 package singbox
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"net"
@@ -382,15 +383,32 @@ func buildShadowsocks(base M, nc *panel.NodeConfig, users []panel.User) M {
 	base["type"] = "shadowsocks"
 	base["method"] = nc.Cipher
 
-	if strings.HasPrefix(nc.Cipher, "2022-blake3-") {
+	is2022 := strings.HasPrefix(nc.Cipher, "2022-blake3-")
+	if is2022 {
 		base["password"] = nc.ServerKey
+	}
+
+	// For SS2022 ciphers, the per-user key must be base64-encoded to match
+	// the panel's Helper::uuidToBase64(uuid, keySize) output.
+	// AES-256 requires 32-byte keys, AES-128 requires 16-byte keys.
+	keySize := 32
+	if nc.Cipher == "2022-blake3-aes-128-gcm" {
+		keySize = 16
 	}
 
 	userList := make([]M, 0, len(users))
 	for _, u := range users {
+		password := u.UUID
+		if is2022 {
+			raw := u.UUID
+			if len(raw) > keySize {
+				raw = raw[:keySize]
+			}
+			password = base64.StdEncoding.EncodeToString([]byte(raw))
+		}
 		userList = append(userList, M{
 			"name":     u.UUID,
-			"password": u.UUID,
+			"password": password,
 		})
 	}
 	base["users"] = userList
