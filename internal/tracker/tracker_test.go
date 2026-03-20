@@ -254,6 +254,60 @@ func TestProcess_NoTrafficDelta(t *testing.T) {
 	}
 }
 
+func TestOnlineCountsUniqueIPs(t *testing.T) {
+	tr := New()
+	// 1 user, 3 connections from 2 unique IPs → online should be 2 (not 3)
+	conns := []kernel.Connection{
+		{ID: "c1", UserID: 1, Upload: 100, Download: 200, SourceIP: "1.1.1.1"},
+		{ID: "c2", UserID: 1, Upload: 50, Download: 80, SourceIP: "1.1.1.1"},
+		{ID: "c3", UserID: 1, Upload: 30, Download: 40, SourceIP: "2.2.2.2"},
+	}
+	tr.Process(conns)
+
+	online := tr.CurrentOnline()
+	if online[1] != 2 {
+		t.Errorf("online should count unique IPs: got %d, want 2", online[1])
+	}
+}
+
+func TestFlushOnline(t *testing.T) {
+	tr := New()
+	tr.Process([]kernel.Connection{
+		{ID: "c1", UserID: 1, Upload: 100, Download: 200, SourceIP: "1.1.1.1"},
+		{ID: "c2", UserID: 1, Upload: 50, Download: 80, SourceIP: "2.2.2.2"},
+		{ID: "c3", UserID: 2, Upload: 30, Download: 40, SourceIP: "3.3.3.3"},
+	})
+
+	flushed := tr.FlushOnline()
+	if flushed[1] != 2 {
+		t.Errorf("user 1 online: got %d, want 2", flushed[1])
+	}
+	if flushed[2] != 1 {
+		t.Errorf("user 2 online: got %d, want 1", flushed[2])
+	}
+
+	// After flush, should be empty
+	flushed2 := tr.FlushOnline()
+	if len(flushed2) != 0 {
+		t.Errorf("expected empty after second flush, got %v", flushed2)
+	}
+}
+
+func TestRestoreOnline(t *testing.T) {
+	tr := New()
+	tr.Process([]kernel.Connection{
+		{ID: "c1", UserID: 1, Upload: 100, Download: 200, SourceIP: "1.1.1.1"},
+	})
+
+	flushed := tr.FlushOnline()
+	tr.RestoreOnline(flushed)
+
+	restored := tr.FlushOnline()
+	if restored[1] != 1 {
+		t.Errorf("restored online: got %d, want 1", restored[1])
+	}
+}
+
 func TestTrafficAccumulation(t *testing.T) {
 	tr := New()
 

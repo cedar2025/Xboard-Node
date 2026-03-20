@@ -32,7 +32,7 @@ type Tracker struct {
 	connState map[string][2]int64     // conn_id → last [upload, download]
 	traffic   map[int][2]int64        // user_id → accumulated [upload, download]
 	aliveIPs  map[int]map[string]bool // user_id → set of source IPs
-	online    map[int]int             // user_id → current active connection count
+	online    map[int]int             // user_id → unique device count (unique IPs)
 
 	// ② Reused buffer: cleared each Process() call, not reallocated.
 	activeConns map[string]struct{}
@@ -91,7 +91,7 @@ func (t *Tracker) Process(conns []kernel.Connection) map[int][2]int64 {
 		}
 	}
 
-	// Clear online counts
+	// Clear online counts (will be rebuilt from unique IPs below)
 	for uid := range t.online {
 		delete(t.online, uid)
 	}
@@ -102,8 +102,6 @@ func (t *Tracker) Process(conns []kernel.Connection) map[int][2]int64 {
 		if conn.UserID == 0 {
 			continue
 		}
-
-		t.online[conn.UserID]++
 
 		var deltaUp, deltaDown int64
 		prev, exists := t.connState[conn.ID]
@@ -151,6 +149,14 @@ func (t *Tracker) Process(conns []kernel.Connection) map[int][2]int64 {
 			if len(ips) < t.maxAliveIPsPerUser {
 				ips[conn.SourceIP] = true
 			}
+		}
+	}
+
+	// Rebuild online counts from unique IPs (device count, not connection count).
+	// This ensures online[uid] == number of distinct source IPs for that user.
+	for uid, ips := range t.aliveIPs {
+		if n := len(ips); n > 0 {
+			t.online[uid] = n
 		}
 	}
 
@@ -220,7 +226,26 @@ func (t *Tracker) FlushAliveIPs() map[int][]string {
 	return data
 }
 
-// CurrentOnline returns a map of user_id to active connection count.
+// FlushOnline returns a snapshot of per-user online device counts and resets.
+// This makes online consistent with FlushTraffic/FlushAliveIPs: the caller
+// gets an owned copy and the tracker starts fresh.
+func (t *Tracker) FlushOnline() map[int]int {
+	data := t.online
+	t.online = make(map[int]int, len(data))
+	return data
+}
+
+// RestoreOnline merges online counts back (used when push to panel fails).
+func (t *Tracker) RestoreOnline(data map[int]int) {
+	for uid, count := range data {
+		if count > t.online[uid] {
+			t.online[uid] = count
+		}
+	}
+}
+
+// CurrentOnline returns a reference to the current online map (read-only).
+// Prefer FlushOnline for report pushes to ensure atomicity with restore.
 func (t *Tracker) CurrentOnline() map[int]int {
 	return t.online
 }

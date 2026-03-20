@@ -784,7 +784,10 @@ func (s *Service) executeKicks(ctx context.Context, kicks []limiter.KickAction) 
 	}
 }
 
-// pushReport sends consolidated traffic + alive + status to the panel
+// pushReport sends consolidated traffic + alive + status to the panel.
+// When WebSocket is connected, node.status is already sent every 10s via WS,
+// so we still push the full report (traffic/alive/online) but at the normal
+// pushInterval — the panel deduplicates metrics from both channels.
 func (s *Service) pushReport() {
 	if s.pushBackoff.shouldSkip() {
 		slog.Debug("skipping report due to backoff")
@@ -793,7 +796,7 @@ func (s *Service) pushReport() {
 
 	traffic := s.tracker.FlushTraffic()
 	aliveIPs := s.tracker.FlushAliveIPs()
-	online := s.tracker.CurrentOnline()
+	online := s.tracker.FlushOnline()
 	status := monitor.Collect()
 
 	metrics := s.buildMetrics(status)
@@ -815,12 +818,15 @@ func (s *Service) pushReport() {
 		if len(aliveIPs) > 0 {
 			s.tracker.RestoreAliveIPs(aliveIPs)
 		}
+		if len(online) > 0 {
+			s.tracker.RestoreOnline(online)
+		}
 		s.pushBackoff.onFailure()
 		return
 	}
 
 	s.pushBackoff.onSuccess()
-	slog.Info("report pushed", "users_with_traffic", len(traffic), "online", len(online))
+	slog.Info("report pushed", "users_with_traffic", len(traffic), "online_devices", len(online))
 }
 
 // buildMetrics aggregates node-level metrics to be reported to the panel.

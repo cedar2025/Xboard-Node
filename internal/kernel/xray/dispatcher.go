@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/netip"
 	"reflect"
 	"sort"
 	"strconv"
@@ -61,6 +62,10 @@ func limitDispatcherFactory(ctx context.Context, config interface{}) (interface{
 	slog.Debug("xray: limit dispatcher installed")
 	return ld, nil
 }
+
+// maxConns caps the xray dispatcher's connection map to prevent OOM under
+// connection floods. This is analogous to sing-box's maxPending.
+const maxConns = 100_000
 
 // LimitDispatcher wraps xray's DefaultDispatcher to add per-user device
 // limit enforcement, speed limiting, and per-connection source IP tracking.
@@ -156,6 +161,11 @@ func (d *LimitDispatcher) wrapLink(ctx context.Context, link *transport.Link, em
 	}
 
 	d.mu.Lock()
+	if len(d.conns) >= maxConns {
+		d.mu.Unlock()
+		slog.Warn("xray: conns map at capacity, skipping tracking", "cap", maxConns, "email", email)
+		return
+	}
 	d.conns[connID] = dc
 	d.mu.Unlock()
 
@@ -303,16 +313,26 @@ func (d *LimitDispatcher) checkDeviceLimit(email, sourceIP string, isTCP bool) b
 		return false
 	}
 
-	// Over limit — deterministic: allow lowest IPs lexicographically
-	ipList := make([]string, 0, len(ips)+1)
-	for ip := range ips {
-		ipList = append(ipList, ip)
+	// Over limit — deterministic: allow lowest IPs by numeric address.
+	// Uses netip.Addr.Compare for consistency with the sing-box limiter,
+	// avoiding lexicographic quirks (e.g. "10.x" vs "192.x", IPv6 ordering).
+	type parsedIP struct {
+		raw  string
+		addr netip.Addr
 	}
-	ipList = append(ipList, sourceIP)
-	sort.Strings(ipList)
+	ipList := make([]parsedIP, 0, len(ips)+1)
+	for ip := range ips {
+		a, _ := netip.ParseAddr(ip)
+		ipList = append(ipList, parsedIP{raw: ip, addr: a})
+	}
+	srcAddr, _ := netip.ParseAddr(sourceIP)
+	ipList = append(ipList, parsedIP{raw: sourceIP, addr: srcAddr})
+	sort.Slice(ipList, func(i, j int) bool {
+		return ipList[i].addr.Compare(ipList[j].addr) < 0
+	})
 
 	for i := 0; i < limit && i < len(ipList); i++ {
-		if ipList[i] == sourceIP {
+		if ipList[i].raw == sourceIP {
 			if isTCP {
 				ips[sourceIP]++
 			}
