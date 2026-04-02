@@ -227,6 +227,51 @@ UNIT
     log_info "Systemd template installed: ${SERVICE_TEMPLATE}"
 }
 
+# ─── OpenRC Template ──────────────────────────────────────────────────
+
+install_openrc_template() {
+    if ! command -v rc-service >/dev/null 2>&1; then
+        return
+    fi
+
+    # OpenRC doesn't use templates, create service per node
+    local node_id="$1"
+    local service_name="xboard-node-${node_id}"
+    local service_file="/etc/init.d/${service_name}"
+
+    if [ -f "$service_file" ]; then
+        return
+    fi
+
+    log_step "Installing OpenRC service: ${service_name}..."
+
+    cat > "$service_file" << EOF
+#!/sbin/openrc-run
+
+name="${service_name}"
+description="Xboard Node Backend (node ${node_id})"
+command="/usr/local/bin/xboard-node"
+command_args="-c /etc/xboard-node/${node_id}/config.yml"
+command_background=true
+pidfile="/run/\${RC_SVCNAME}.pid"
+output_log="/var/log/\${RC_SVCNAME}.log"
+error_log="/var/log/\${RC_SVCNAME}.err"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    checkpath --directory --mode 0755 /var/log
+    checkpath --directory --mode 0755 /run
+}
+EOF
+
+    chmod +x "$service_file"
+    log_info "OpenRC service installed: ${service_name}"
+}
+
 # ─── Migrate Legacy Config ───────────────────────────────────────────
 
 migrate_legacy_config() {
@@ -357,8 +402,13 @@ add_node_native() {
         systemctl enable "xboard-node@${node_id}"
         systemctl start "xboard-node@${node_id}"
         log_info "Service started: xboard-node@${node_id}"
+    elif command -v rc-service >/dev/null 2>&1; then
+        install_openrc_template "$node_id"
+        rc-update add "xboard-node-${node_id}" default
+        rc-service "xboard-node-${node_id}" start
+        log_info "Service started: xboard-node-${node_id}"
     else
-        log_warn "No systemd found. Start manually:"
+        log_warn "No service manager found. Start manually:"
         echo "  xboard-node -c ${CONFIG_DIR}/${node_id}/config.yml"
     fi
 }
@@ -461,12 +511,18 @@ deploy_node() {
         echo "    Logs:    docker logs -f xboard-node-${NODE_ID}"
         echo "    Stop:    cd ${CONFIG_DIR} && docker compose stop node-${NODE_ID}"
         echo "    Restart: cd ${CONFIG_DIR} && docker compose restart node-${NODE_ID}"
-    else
+    elif command -v systemctl >/dev/null 2>&1; then
         echo "  Manage:"
         echo "    Status:  systemctl status xboard-node@${NODE_ID}"
         echo "    Logs:    journalctl -u xboard-node@${NODE_ID} -f"
         echo "    Stop:    systemctl stop xboard-node@${NODE_ID}"
         echo "    Restart: systemctl restart xboard-node@${NODE_ID}"
+    elif command -v rc-service >/dev/null 2>&1; then
+        echo "  Manage:"
+        echo "    Status:  rc-service xboard-node-${NODE_ID} status"
+        echo "    Logs:    tail -f /var/log/xboard-node-${NODE_ID}.log"
+        echo "    Stop:    rc-service xboard-node-${NODE_ID} stop"
+        echo "    Restart: rc-service xboard-node-${NODE_ID} restart"
     fi
 
     echo ""
@@ -491,12 +547,24 @@ remove_node() {
 
     log_step "Removing node ${node_id}..."
 
+    # Stop and disable systemd service
     if command -v systemctl >/dev/null 2>&1; then
         systemctl stop "xboard-node@${node_id}" 2>/dev/null || true
         systemctl disable "xboard-node@${node_id}" 2>/dev/null || true
         log_info "Systemd service stopped and disabled"
     fi
 
+    # Stop and disable OpenRC service
+    if command -v rc-service >/dev/null 2>&1; then
+        if [ -f "/etc/init.d/xboard-node-${node_id}" ]; then
+            rc-service "xboard-node-${node_id}" stop 2>/dev/null || true
+            rc-update del "xboard-node-${node_id}" default 2>/dev/null || true
+            rm -f "/etc/init.d/xboard-node-${node_id}"
+            log_info "OpenRC service stopped and removed"
+        fi
+    fi
+
+    # Stop and remove Docker container
     if command -v docker >/dev/null 2>&1; then
         docker rm -f "xboard-node-${node_id}" 2>/dev/null || true
     fi
@@ -528,11 +596,24 @@ list_nodes() {
         kernel_type=$(grep -E '^\s*type:' "${dir}config.yml" 2>/dev/null | head -1 | sed 's/.*type:\s*"\?\([^"]*\)"\?.*/\1/')
 
         local status="${RED}stopped${NC}"
+        
+        # Check systemd
         if command -v systemctl >/dev/null 2>&1; then
             if systemctl is-active "xboard-node@${nid}" >/dev/null 2>&1; then
                 status="${GREEN}running (systemd)${NC}"
             fi
         fi
+        
+        # Check OpenRC
+        if command -v rc-service >/dev/null 2>&1; then
+            if [ -f "/etc/init.d/xboard-node-${nid}" ]; then
+                if rc-service "xboard-node-${nid}" status >/dev/null 2>&1; then
+                    status="${GREEN}running (openrc)${NC}"
+                fi
+            fi
+        fi
+        
+        # Check Docker
         if command -v docker >/dev/null 2>&1; then
             if docker inspect -f '{{.State.Running}}' "xboard-node-${nid}" 2>/dev/null | grep -q true; then
                 status="${GREEN}running (docker)${NC}"
@@ -574,6 +655,7 @@ update_binary() {
         exit 1
     fi
 
+    # Restart systemd services
     if command -v systemctl >/dev/null 2>&1; then
         for dir in "${CONFIG_DIR}"/*/; do
             [ -f "${dir}config.yml" ] || continue
@@ -582,6 +664,21 @@ update_binary() {
             if systemctl is-active "xboard-node@${nid}" >/dev/null 2>&1; then
                 systemctl restart "xboard-node@${nid}"
                 log_info "Restarted: xboard-node@${nid}"
+            fi
+        done
+    fi
+
+    # Restart OpenRC services
+    if command -v rc-service >/dev/null 2>&1; then
+        for dir in "${CONFIG_DIR}"/*/; do
+            [ -f "${dir}config.yml" ] || continue
+            local nid
+            nid=$(basename "$dir")
+            if [ -f "/etc/init.d/xboard-node-${nid}" ]; then
+                if rc-service "xboard-node-${nid}" status >/dev/null 2>&1; then
+                    rc-service "xboard-node-${nid}" restart 2>/dev/null || log_warn "Failed to restart xboard-node-${nid}"
+                    log_info "Restarted: xboard-node-${nid}"
+                fi
             fi
         done
     fi
@@ -595,6 +692,7 @@ update_binary() {
 do_uninstall() {
     log_step "Uninstalling xboard-node..."
 
+    # Stop and disable all systemd services
     if command -v systemctl >/dev/null 2>&1; then
         for dir in "${CONFIG_DIR}"/*/; do
             [ -f "${dir}config.yml" ] || continue
@@ -610,6 +708,21 @@ do_uninstall() {
         systemctl daemon-reload
     fi
 
+    # Stop and disable all OpenRC services
+    if command -v rc-service >/dev/null 2>&1; then
+        for dir in "${CONFIG_DIR}"/*/; do
+            [ -f "${dir}config.yml" ] || continue
+            local nid
+            nid=$(basename "$dir")
+            if [ -f "/etc/init.d/xboard-node-${nid}" ]; then
+                rc-service "xboard-node-${nid}" stop 2>/dev/null || true
+                rc-update del "xboard-node-${nid}" default 2>/dev/null || true
+            fi
+        done
+        rm -f /etc/init.d/xboard-node-*
+    fi
+
+    # Stop and remove all Docker containers
     if command -v docker >/dev/null 2>&1; then
         for dir in "${CONFIG_DIR}"/*/; do
             [ -f "${dir}config.yml" ] || continue
