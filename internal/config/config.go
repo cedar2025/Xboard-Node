@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/cedar2025/xboard-node/internal/nlog"
 	"golang.org/x/term"
@@ -202,8 +203,17 @@ func (c *Config) applyEnvOverrides() {
 		c.Panel.Token = v
 	}
 	if v := envFirst("nodeID", "NODE_ID"); v != "" {
-		if id, err := strconv.Atoi(v); err == nil {
-			c.Panel.NodeID = id
+		parts := strings.Split(v, ",")
+		if len(parts) == 1 {
+			if id, err := strconv.Atoi(strings.TrimSpace(parts[0])); err == nil {
+				c.Panel.NodeID = id
+			}
+		} else {
+			for _, p := range parts {
+				if id, err := strconv.Atoi(strings.TrimSpace(p)); err == nil && id > 0 {
+					c.Nodes = append(c.Nodes, NodeEntry{NodeID: id})
+				}
+			}
 		}
 	}
 	if v := envFirst("nodeType", "NODE_TYPE"); v != "" {
