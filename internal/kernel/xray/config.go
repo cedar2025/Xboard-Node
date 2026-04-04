@@ -500,7 +500,28 @@ func applyStreamSettings(base M, nc *panel.NodeConfig, certFile, keyFile string)
 			}
 		}
 		ss["grpcSettings"] = grpcSettings
-
+		
+    case "xhttp":
+        xhttpSettings := M{}
+        if nc.NetworkSettings != nil {
+            if v, ok := nc.NetworkSettings["path"]; ok {
+                xhttpSettings["path"] = v
+            }
+            if v, ok := nc.NetworkSettings["host"]; ok {
+                    xhttpSettings["host"] = v
+            }
+            if v, ok := nc.NetworkSettings["mode"]; ok {
+                    xhttpSettings["mode"] = v
+            }
+                        // extra 参数（服务端）
+            if extra, ok := nc.NetworkSettings["extra"]; ok {
+                    if extraMap, ok := extra.(map[string]interface{}); ok {
+                            xhttpSettings["extra"] = extraMap
+                    }
+            }
+            }
+        ss["xhttpSettings"] = xhttpSettings
+		
 	case "httpupgrade":
 		huSettings := M{}
 		if nc.NetworkSettings != nil {
