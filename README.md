@@ -6,6 +6,11 @@ Dedicated node backend for [Xboard](https://github.com/cedar2025/Xboard). Fully 
 
 ## Install
 
+### Quick Install
+```bash
+wget -N https://raw.githubusercontent.com/cedar2025/Xboard-Node/master/install.sh && bash install.sh
+```
+
 ### Docker
 ```bash
 docker run -d --restart=always --network=host \
