@@ -13,7 +13,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -ldflags "-s -w \
     -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev) \
     -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    -tags "with_quic with_utls with_wireguard with_clash_api" \
+    -tags "with_quic with_grpc with_utls with_wireguard with_clash_api" \
     -o xboard-node ./cmd/xboard-node
 
 # Runtime stage — sing-box & xray-core are embedded as Go libraries
