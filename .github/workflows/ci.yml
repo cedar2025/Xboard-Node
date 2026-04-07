@@ -92,9 +92,9 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/cedar2025/xboard-node:latest
-            ghcr.io/cedar2025/xboard-node:${{ github.sha }}
-            ${{ startsWith(github.ref, 'refs/tags/') && format('ghcr.io/cedar2025/xboard-node:{0}', github.ref_name) || '' }}
+            ghcr.io/senhao-xu/xboard-node:latest
+            ghcr.io/senhao-xu/xboard-node:${{ github.sha }}
+            ${{ startsWith(github.ref, 'refs/tags/') && format('ghcr.io/senhao-xu/xboard-node:{0}', github.ref_name) || '' }}
 
   release:
     name: Release
