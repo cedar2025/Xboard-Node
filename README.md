@@ -12,7 +12,7 @@ docker run -d --restart=always --network=host \
   -e apiHost=https://panel.com \
   -e apiKey=TOKEN \
   -e nodeID=1 \
-  ghcr.io/cedar2025/xboard-node:latest
+  ghcr.io/xusenhao/xboard-node:latest
 ```
 
 ### Docker Compose
@@ -20,7 +20,7 @@ docker run -d --restart=always --network=host \
 **1. Get the `compose/` directory**
 
 ```bash
-git clone -b compose --depth 1 https://github.com/cedar2025/xboard-node.git
+git clone -b compose --depth 1 https://github.com/xusenhao/xboard-node.git
 cd xboard-node
 ```
 
