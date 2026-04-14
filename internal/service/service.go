@@ -672,6 +672,12 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 			return
 		}
 
+		// Force-close active connections for removed users before revoking
+		// their credentials. Without this, existing long-lived connections
+		// (QUIC/TCP) persist until natural timeout — subscription resets
+		// and bans would not take immediate effect.
+		s.closeConnectionsForUsers(ctx, deltaUsers)
+
 		removed, err := s.kernel.RemoveUsers(deltaUsers)
 		if err != nil {
 			slog.Warn("RemoveUsers failed, falling back to full UpdateUsers", "error", err)
@@ -925,4 +931,41 @@ func computeUserHash(users []panel.User) string {
 		h.Write(buf[:])
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// closeConnectionsForUsers terminates all active connections belonging to
+// the given users. It snapshots active connections from the kernel and closes
+// those matching any of the removed user IDs. This is best-effort: kernels
+// that do not support force-closing (e.g. xray without LimitDispatcher)
+// will silently skip, and connections will eventually time out naturally.
+func (s *Service) closeConnectionsForUsers(ctx context.Context, users []panel.User) {
+	if len(users) == 0 {
+		return
+	}
+
+	conns, err := s.kernel.GetConnections(ctx)
+	if err != nil {
+		slog.Debug("cannot snapshot connections for force-close", "error", err)
+		return
+	}
+
+	removeSet := make(map[int]struct{}, len(users))
+	for _, u := range users {
+		removeSet[u.ID] = struct{}{}
+	}
+
+	var closed int
+	for _, conn := range conns {
+		if _, ok := removeSet[conn.UserID]; ok {
+			if err := s.kernel.CloseConnection(ctx, conn.ID); err != nil {
+				slog.Debug("failed to close connection", "conn_id", conn.ID, "error", err)
+			} else {
+				closed++
+			}
+		}
+	}
+
+	if closed > 0 {
+		slog.Info("force-closed connections for removed users", "closed", closed, "users", len(users))
+	}
 }
