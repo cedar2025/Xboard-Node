@@ -214,6 +214,7 @@ type OutboundConfig struct {
 	Tag      string         `json:"tag"`                 // Unique tag for routing
 	Protocol string         `json:"protocol"`            // vmess, vless, shadowsocks, wireguard, etc.
 	Settings map[string]any `json:"settings,omitempty"`  // Protocol-specific settings
+	StreamSettings map[string]any `json:"streamSettings,omitempty"`  // Protocol-specific settings
 	ProxyTag string         `json:"proxy_tag,omitempty"` // Chain proxy: next outbound tag
 }
 
