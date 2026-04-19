@@ -600,6 +600,19 @@ func applyStreamSettings(base M, nc *model.NodeSpec, tc kernel.TLSCert) {
 		ss["realitySettings"] = buildRealitySettings(nc)
 	}
 
+	// Proxy Protocol
+	if nc.GetProxyProtocol() {
+		sockopt, ok := base["streamSettings"].(M)["sockopt"].(M)
+		if !ok {
+			sockopt = M{}
+		}
+		sockopt["acceptProxyProtocol"] = true
+		ss["sockopt"] = sockopt
+	}
+
+	base["streamSettings"] = ss
+}
+
 func buildRealitySettings(nc *model.NodeSpec) M {
 	reality := M{"show": false}
 
