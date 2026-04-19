@@ -9,6 +9,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/libdns/alidns v1.0.6
 	github.com/libdns/cloudflare v0.2.2
+	github.com/libdns/tencentcloud v1.4.3
 	github.com/sagernet/sing v0.8.2
 	github.com/sagernet/sing-box v1.13.2
 	github.com/shirou/gopsutil/v4 v4.26.2
@@ -177,4 +178,5 @@ require (
 )
 
 replace github.com/sagernet/sing-box => github.com/cedar2025/sing-box v1.14.0-alpha.2.0.20260316103356-2e665cb7e295
+
 replace github.com/xtls/xray-core => github.com/cedar2025/Xray-core v0.0.0-20260409213332-f47935539965

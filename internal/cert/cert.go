@@ -21,6 +21,7 @@ import (
 	"github.com/caddyserver/certmagic"
 	"github.com/libdns/alidns"
 	"github.com/libdns/cloudflare"
+	"github.com/libdns/tencentcloud"
 
 	"github.com/cedar2025/xboard-node/internal/config"
 	"github.com/cedar2025/xboard-node/internal/kernel"
@@ -443,8 +444,19 @@ func (m *Manager) newDNSProvider() (certmagic.DNSProvider, error) {
 			},
 		}, nil
 
+	case "dnspod", "tencentcloud":
+		secretId := firstOf(env, "TENCENTCLOUD_SECRET_ID")
+		secretKey := firstOf(env, "TENCENTCLOUD_SECRET_KEY")
+		if secretId == "" || secretKey == "" {
+			return nil, fmt.Errorf("tencentcloud/dnspod requires TENCENTCLOUD_SECRET_ID and TENCENTCLOUD_SECRET_KEY in dns_env")
+		}
+		return &tencentcloud.Provider{
+			SecretId:  secretId,
+			SecretKey: secretKey,
+		}, nil
+		
 	default:
-		return nil, fmt.Errorf("unsupported dns_provider: %q (supported: cloudflare, alidns)", name)
+		return nil, fmt.Errorf("unsupported dns_provider: %q (supported: cloudflare, alidns, tencentcloud)", name)
 	}
 }
 
