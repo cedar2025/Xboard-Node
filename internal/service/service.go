@@ -1221,12 +1221,12 @@ func validateRuntimeCertConfig(spec *model.NodeSpec) error {
 	}
 	provider := strings.ToLower(strings.TrimSpace(spec.CertConfig.DNSProvider))
 	switch provider {
-	case "cloudflare", "cf", "alidns", "aliyun":
+	case "cloudflare", "cf", "alidns", "aliyun", "tencentcloud", "dnspod":
 		return nil
 	case "":
 		return fmt.Errorf("dns cert mode requires cert_config.dns_provider")
 	default:
-		return fmt.Errorf("unsupported cert_config.dns_provider %q (supported: cloudflare, alidns)", spec.CertConfig.DNSProvider)
+		return fmt.Errorf("unsupported cert_config.dns_provider %q (supported: cloudflare, alidns, tencentcloud)", spec.CertConfig.DNSProvider)
 	}
 }
 
