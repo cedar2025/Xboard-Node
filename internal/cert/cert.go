@@ -19,9 +19,8 @@ import (
 	"time"
 
 	"github.com/caddyserver/certmagic"
-	"github.com/libdns/alidns"
-	"github.com/libdns/cloudflare"
 
+	"github.com/cedar2025/xboard-node/internal/cert/dnsproviders"
 	"github.com/cedar2025/xboard-node/internal/config"
 	"github.com/cedar2025/xboard-node/internal/kernel"
 	"github.com/cedar2025/xboard-node/internal/nlog"
@@ -416,36 +415,20 @@ func (m *Manager) buildDNSSolver() (*certmagic.DNS01Solver, error) {
 }
 
 func (m *Manager) newDNSProvider() (certmagic.DNSProvider, error) {
-	name := strings.ToLower(strings.TrimSpace(m.cfg.DNSProvider))
+	name := strings.TrimSpace(m.cfg.DNSProvider)
+	if name == "" {
+		return nil, fmt.Errorf("dns_provider is required for cert_mode=dns")
+	}
 	env := m.cfg.DNSEnv
 	if env == nil {
 		env = map[string]string{}
 	}
-
-	switch name {
-	case "cloudflare", "cf":
-		token := firstOf(env, "CF_API_TOKEN", "CLOUDFLARE_API_TOKEN")
-		if token == "" {
-			return nil, fmt.Errorf("cloudflare requires CF_API_TOKEN in dns_env")
-		}
-		return &cloudflare.Provider{APIToken: token}, nil
-
-	case "alidns", "aliyun":
-		keyID := firstOf(env, "ALICLOUD_ACCESS_KEY_ID", "ALI_ACCESS_KEY_ID")
-		keySecret := firstOf(env, "ALICLOUD_ACCESS_KEY_SECRET", "ALI_ACCESS_KEY_SECRET")
-		if keyID == "" || keySecret == "" {
-			return nil, fmt.Errorf("alidns requires ALICLOUD_ACCESS_KEY_ID and ALICLOUD_ACCESS_KEY_SECRET in dns_env")
-		}
-		return &alidns.Provider{
-			CredentialInfo: alidns.CredentialInfo{
-				AccessKeyID:     keyID,
-				AccessKeySecret: keySecret,
-			},
-		}, nil
-
-	default:
-		return nil, fmt.Errorf("unsupported dns_provider: %q (supported: cloudflare, alidns)", name)
+	p, ok := dnsproviders.Get(name)
+	if !ok {
+		return nil, fmt.Errorf("unsupported dns_provider: %q (supported: %s)",
+			name, strings.Join(dnsproviders.CanonicalNames(), ", "))
 	}
+	return p.Build(env)
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -477,14 +460,4 @@ func (m *Manager) loadCertFromStorage(ctx context.Context, storage certmagic.Sto
 	if renewal {
 		m.renewed.Store(true)
 	}
-}
-
-// firstOf returns the first non-empty value for any of the given keys in the map.
-func firstOf(m map[string]string, keys ...string) string {
-	for _, k := range keys {
-		if v := m[k]; v != "" {
-			return v
-		}
-	}
-	return ""
 }
