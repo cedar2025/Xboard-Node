@@ -95,6 +95,9 @@ func outboundConfigToXray(oc model.OutboundConfig) M {
 	if len(oc.Settings) > 0 {
 		m["settings"] = oc.Settings
 	}
+		if len(oc.StreamSettings) > 0 {
+		m["streamSettings"] = oc.StreamSettings
+	}
 	if oc.ProxyTag != "" {
 		m["proxySettings"] = M{"tag": oc.ProxyTag}
 	}
@@ -577,19 +580,21 @@ func applyStreamSettings(base M, nc *model.NodeSpec, tc kernel.TLSCert) {
 				tlsSettings["echServerKeys"] = echKeys
 			}
 		}
+
+		// 核心修改：只有当有证书时，才写入 security 和 tlsSettings
 		if tc.HasCert() {
 			tlsCert := M{
 				"certificate": []string{string(tc.CertPEM)},
 				"key":         []string{string(tc.KeyPEM)},
 			}
 			tlsSettings["certificates"] = []M{tlsCert}
-		} else {
-			// Fallback placeholder for auto-TLS environments.
-			// Xray allows empty certificates array in more cases than sing-box,
-			// but providing a placeholder helps documentation.
+			
+			// 只有在这里才设置 security 为 "tls"
+			ss["security"] = "tls"
+			ss["tlsSettings"] = tlsSettings
 		}
-		ss["security"] = "tls"
-		ss["tlsSettings"] = tlsSettings
+		// 如果没有证书，上述代码块不执行，ss["security"] 保持默认值（即 "none"）
+
 	} else if nc.TLS == 2 {
 		ss["security"] = "reality"
 		ss["realitySettings"] = buildRealitySettings(nc)
@@ -684,7 +689,7 @@ func buildRouting(rules []model.RouteRule, customRouteRules []model.CustomRouteR
 	}
 
 	return M{
-		"domainStrategy": "AsIs",
+		"domainStrategy": "IPIfNonMatch",
 		"rules":          xrayRules,
 	}
 }

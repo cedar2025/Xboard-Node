@@ -51,6 +51,7 @@ type OutboundConfig struct {
 	Tag      string
 	Protocol string
 	Settings map[string]any
+	StreamSettings map[string]any
 	ProxyTag string
 }
 
