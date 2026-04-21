@@ -689,7 +689,7 @@ func buildRouting(rules []model.RouteRule, customRouteRules []model.CustomRouteR
 	}
 
 	return M{
-		"domainStrategy": "AsIs",
+		"domainStrategy": "IPIfNonMatch",
 		"rules":          xrayRules,
 	}
 }
