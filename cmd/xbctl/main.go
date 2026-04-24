@@ -54,7 +54,7 @@ type fileRootConfig struct {
 	WS        *config.WSConfig   `yaml:"ws,omitempty"`
 	Runtime   *fileRuntimeConfig `yaml:"runtime,omitempty"`
 	Cert      *config.CertConfig `yaml:"cert,omitempty"`
-	Instances []fileInstance      `yaml:"instances,omitempty"`
+	Instances []fileInstance     `yaml:"instances,omitempty"`
 }
 
 type fileInstance struct {
@@ -356,6 +356,17 @@ func runBind(args []string) error {
 }
 
 func runBindAdd(mode string, args []string) error {
+	// Check if binaries are already installed, skip download if they exist
+	if fileExists(defaultBinaryPath) && fileExists(defaultCLIPath) {
+		fmt.Println("Binaries already installed, skipping download...")
+	} else {
+		// Binaries not found, proceed with download
+		fmt.Println("Binaries not found, downloading...")
+		if err := downloadRequiredBinaries(); err != nil {
+			return fmt.Errorf("failed to download required binaries: %w", err)
+		}
+	}
+
 	// Build configInit args from bind args
 	initArgs := []string{
 		"--mode", mode,
@@ -375,7 +386,18 @@ func runBindAdd(mode string, args []string) error {
 	// Restart service to pick up new config
 	fmt.Println("Restarting service...")
 	if err := runCommand("systemctl", "restart", serviceName); err != nil {
-		return fmt.Errorf("service restart failed: %w", err)
+		if isServiceNotFound(err) {
+			fmt.Println("Service not found, creating service file...")
+			if err := regenerateServiceFile(); err != nil {
+				return fmt.Errorf("failed to create service file: %w", err)
+			}
+			runCommand("systemctl", "daemon-reload")
+			if err := runCommand("systemctl", "restart", serviceName); err != nil {
+				return fmt.Errorf("service restart failed after creating service file: %w", err)
+			}
+		} else {
+			return fmt.Errorf("service restart failed: %w", err)
+		}
 	}
 	fmt.Println("Binding added successfully")
 	return nil
@@ -618,6 +640,70 @@ func downloadFile(url, dest string) error {
 	return err
 }
 
+func downloadRequiredBinaries() error {
+	arch := runtime.GOARCH
+	if arch != "amd64" && arch != "arm64" {
+		return fmt.Errorf("unsupported architecture: %s", arch)
+	}
+
+	// Create directories if they don't exist
+	binaryDir := filepath.Dir(defaultBinaryPath)
+	cliDir := filepath.Dir(defaultCLIPath)
+	configDir := filepath.Dir(defaultConfigPath)
+
+	if err := os.MkdirAll(binaryDir, 0755); err != nil {
+		return fmt.Errorf("create binary directory: %w", err)
+	}
+	if err := os.MkdirAll(cliDir, 0755); err != nil {
+		return fmt.Errorf("create CLI directory: %w", err)
+	}
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := os.MkdirAll(defaultInstallRoot, 0755); err != nil {
+		return fmt.Errorf("create install root directory: %w", err)
+	}
+
+	// Download binaries
+	binaryURL := resolveDownloadURL(fmt.Sprintf("xboard-node-linux-%s", arch), "latest")
+	cliURL := resolveDownloadURL(fmt.Sprintf("xbctl-linux-%s", arch), "latest")
+
+	fmt.Printf("[STEP] Downloading binary: %s\n", binaryURL)
+	if err := downloadFile(binaryURL, defaultBinaryPath); err != nil {
+		return fmt.Errorf("download binary: %w", err)
+	}
+
+	fmt.Printf("[STEP] Downloading xbctl: %s\n", cliURL)
+	if err := downloadFile(cliURL, defaultCLIPath); err != nil {
+		os.Remove(defaultBinaryPath)
+		return fmt.Errorf("download xbctl: %w", err)
+	}
+
+	// Set permissions
+	if err := os.Chmod(defaultBinaryPath, 0o755); err != nil {
+		return cleanupFiles(defaultBinaryPath, defaultCLIPath, fmt.Errorf("chmod binary: %w", err))
+	}
+	if err := os.Chmod(defaultCLIPath, 0o755); err != nil {
+		return cleanupFiles(defaultBinaryPath, defaultCLIPath, fmt.Errorf("chmod xbctl: %w", err))
+	}
+
+	// Validate downloaded binaries
+	if out, err := exec.Command(defaultBinaryPath, "-v").CombinedOutput(); err != nil {
+		return cleanupFiles(defaultBinaryPath, defaultCLIPath, fmt.Errorf("binary version check failed: %s", string(out)))
+	}
+	if out, err := exec.Command(defaultCLIPath, "version").CombinedOutput(); err != nil {
+		return cleanupFiles(defaultBinaryPath, defaultCLIPath, fmt.Errorf("xbctl version check failed: %s", string(out)))
+	}
+
+	// Create symlink for /usr/bin/xbctl
+	os.Remove("/usr/bin/xbctl")
+	if err := os.Symlink(defaultCLIPath, "/usr/bin/xbctl"); err != nil {
+		return fmt.Errorf("create xbctl symlink: %w", err)
+	}
+
+	return nil
+}
+
 func cleanupFiles(a, b string, err error) error {
 	os.Remove(a)
 	os.Remove(b)
@@ -627,6 +713,17 @@ func cleanupFiles(a, b string, err error) error {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func isServiceNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Check for common service not found error patterns
+	errStr := err.Error()
+	return strings.Contains(errStr, "not found") ||
+		strings.Contains(errStr, "No such file or directory") ||
+		strings.Contains(errStr, "exit status 5")
 }
 
 func copyFile(src, dst string) error {
