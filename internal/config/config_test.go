@@ -115,6 +115,23 @@ panel:
 	}
 }
 
+func TestLoad_HiddifyNodeType(t *testing.T) {
+	path := writeTemp(t, `
+panel:
+  url: "https://panel.example.com"
+  token: "tok"
+  node_id: 42
+  node_type: "Hiddify"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Panel.NodeType != "hiddify" {
+		t.Fatalf("expected node_type to be normalized to hiddify, got %q", cfg.Panel.NodeType)
+	}
+}
+
 func TestLoad_InvalidNodeID(t *testing.T) {
 	path := writeTemp(t, `
 panel:

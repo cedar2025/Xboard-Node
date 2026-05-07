@@ -402,7 +402,7 @@ func (c *Config) applyEnvOverrides() {
 		}
 	}
 	if v := envFirst("nodeType", "NODE_TYPE"); v != "" {
-		c.Panel.NodeType = v
+		c.Panel.NodeType = strings.ToLower(v)
 	}
 	if v := envFirst("kernel", "KERNEL_TYPE"); v != "" {
 		c.Kernel.Type = v

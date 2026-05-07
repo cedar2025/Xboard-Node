@@ -18,7 +18,7 @@ Node backend for [Xboard](https://github.com/cedar2025/Xboard). Supports `sing-b
 
 ```bash
 docker run -d --restart=always --network=host \
-  -e apiHost=https://panel.com -e apiKey=TOKEN -e nodeID=1 \
+  -e apiHost=https://panel.com -e apiKey=TOKEN -e nodeID=1 -e NODE_TYPE=hiddify \
   ghcr.io/cedar2025/xboard-node:latest
 ```
 
@@ -50,6 +50,7 @@ Run `xbctl` after installation for help. Common commands:
 xbctl list                          # list all instances
 xbctl status                        # running status
 xbctl bind add-node --panel URL --token TOKEN --node-id 1
+xbctl bind add-node --panel URL --token TOKEN --node-id 1 --node-type hiddify
 xbctl bind add-machine --panel URL --token TOKEN --machine-id 1
 xbctl bind remove-node --panel URL --node-id 1
 xbctl service restart

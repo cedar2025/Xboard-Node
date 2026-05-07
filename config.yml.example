@@ -6,6 +6,7 @@
 #   url: "https://panel.example.com"
 #   token: "your-api-key"
 #   node_id: 1
+#   node_type: "hiddify"
 
 # ── Multiple instances ──
 # kernel:

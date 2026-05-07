@@ -278,10 +278,10 @@ func TestPushTraffic_ServerError(t *testing.T) {
 
 func TestClient_NodeTypeInQuery(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("node_type") != "vmess" {
-			t.Errorf("node_type: got %q, want vmess", r.URL.Query().Get("node_type"))
+		if r.URL.Query().Get("node_type") != "hiddify" {
+			t.Errorf("node_type: got %q, want hiddify", r.URL.Query().Get("node_type"))
 		}
-		json.NewEncoder(w).Encode(NodeConfig{Protocol: "vmess"})
+		json.NewEncoder(w).Encode(NodeConfig{Protocol: "hiddify"})
 	}))
 	defer ts.Close()
 
@@ -289,7 +289,7 @@ func TestClient_NodeTypeInQuery(t *testing.T) {
 		URL:      ts.URL,
 		Token:    "tok",
 		NodeID:   1,
-		NodeType: "vmess",
+		NodeType: "hiddify",
 	})
 	client.GetConfig()
 }
