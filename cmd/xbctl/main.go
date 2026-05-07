@@ -1267,7 +1267,7 @@ func runConfigInit(args []string) error {
 			nodeID = v
 		case "--node-type":
 			i++
-			nodeType = args[i]
+			nodeType = strings.ToLower(args[i])
 		case "--machine-id":
 			i++
 			v, err := strconv.Atoi(args[i])
