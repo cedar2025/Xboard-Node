@@ -33,6 +33,7 @@ func OutboundSupportMatrix() map[string]KernelOutboundSupport {
 				"anytls",
 				"naive",
 				"mieru",
+				"direct",
 			},
 			Features: []string{
 				"tag",
