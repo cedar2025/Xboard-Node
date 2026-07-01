@@ -502,7 +502,25 @@ func (m *Manager) buildDNSSolver() (*certmagic.DNS01Solver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &certmagic.DNS01Solver{DNSManager: certmagic.DNSManager{DNSProvider: provider}}, nil
+	// By default certmagic asks the CA to validate the DNS-01 challenge almost
+	// immediately after creating the TXT record (PropagationDelay == 0). Providers
+	// with slow or inconsistent global anycast propagation (e.g. DNSPod) can then
+	// fail Let's Encrypt's multi-perspective validation with
+	// "During secondary validation: ... NXDOMAIN": the record is visible from one
+	// vantage point but has not propagated to all of the CA's checkers yet.
+	// Allow waiting for propagation before validation via
+	// XBOARD_DNS_PROPAGATION_DELAY (Go duration, e.g. "120s"). Default 0 keeps the
+	// current behavior.
+	var propagationDelay time.Duration
+	if v := strings.TrimSpace(os.Getenv("XBOARD_DNS_PROPAGATION_DELAY")); v != "" {
+		if d, perr := time.ParseDuration(v); perr == nil {
+			propagationDelay = d
+		}
+	}
+	return &certmagic.DNS01Solver{DNSManager: certmagic.DNSManager{
+		DNSProvider:      provider,
+		PropagationDelay: propagationDelay,
+	}}, nil
 }
 
 func (m *Manager) newDNSProvider() (certmagic.DNSProvider, error) {
