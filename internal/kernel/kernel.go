@@ -103,6 +103,14 @@ type Kernel interface {
 	ClearGlobalDevices()
 }
 
+// TrafficDataReleaser is an optional interface that kernels can implement
+// to release pooled resources after the caller is done with data returned
+// by GetUserTraffic. If the kernel uses sync.Pool for maps/slices, calling
+// ReleaseTrafficData returns them to the pool instead of waiting for GC.
+type TrafficDataReleaser interface {
+	ReleaseTrafficData(traffic map[int][2]int64, aliveIPs map[int]map[string]bool)
+}
+
 // ComputeHash returns a hash of config + user identities that would
 // require a kernel restart/reconstruction if changed.
 func ComputeHash(nc *model.NodeSpec, users []model.UserSpec) string {

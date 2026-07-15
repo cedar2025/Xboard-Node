@@ -7,19 +7,15 @@ import (
 	"github.com/cedar2025/xboard-node/internal/config"
 )
 
+// ValidateNodeSpec validates the node spec, auto-resolving the kernel type
+// from the node's protocol. Custom outbound and route validation uses the
+// resolved kernel type to check protocol/rule compatibility.
 func ValidateNodeSpec(n *NodeSpec, kcfg config.KernelConfig) error {
 	if n == nil {
 		return nil
 	}
 
-	effectiveKernelType := strings.TrimSpace(kcfg.Type)
-	if effectiveKernelType == "" {
-		effectiveKernelType = strings.TrimSpace(n.KernelType)
-	}
-	kernelType, err := normalizeKernelType(effectiveKernelType)
-	if err != nil {
-		return fmt.Errorf("normalize kernel type: %w", err)
-	}
+	kernelType := ResolveKernelType(n.Protocol)
 
 	additionalOutboundSources, err := collectAdditionalOutboundTagSources(kcfg.CustomConfig, kcfg.CustomOutbound)
 	if err != nil {
@@ -68,15 +64,35 @@ func ResolveKernelForTransport(network, configuredKernel string) string {
 	return configuredKernel
 }
 
-func normalizeKernelType(value string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "singbox", "sing-box":
-		return "singbox", nil
-	case "xray":
-		return "xray", nil
-	default:
-		return "", fmt.Errorf("unsupported kernel type %q", value)
+// xraySupportedProtocols lists protocols supported by the xray kernel.
+var xraySupportedProtocols = map[string]bool{
+	"vmess":       true,
+	"vless":       true,
+	"trojan":      true,
+	"shadowsocks": true,
+}
+
+// ResolveKernelForProtocol returns the kernel type that supports the given
+// protocol. If the configured kernel does not support the protocol, it
+// switches to the other kernel. Default preference is xray; singbox is
+// used only when xray cannot handle the protocol.
+func ResolveKernelForProtocol(protocol, configuredKernel string) string {
+	p := strings.ToLower(strings.TrimSpace(protocol))
+	if configuredKernel == "xray" && !xraySupportedProtocols[p] {
+		return "singbox"
 	}
+	return configuredKernel
+}
+
+// ResolveKernelType returns the kernel type ("xray" or "singbox") that
+// natively supports the given protocol. xray is preferred; singbox is
+// returned only for protocols xray does not support.
+func ResolveKernelType(protocol string) string {
+	p := strings.ToLower(strings.TrimSpace(protocol))
+	if xraySupportedProtocols[p] {
+		return "xray"
+	}
+	return "singbox"
 }
 
 func buildAvailableOutboundTags(structured []OutboundConfig, rawTags []string) map[string]struct{} {

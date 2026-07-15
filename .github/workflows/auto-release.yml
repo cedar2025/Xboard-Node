@@ -1,0 +1,116 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: write
+
+jobs:
+  bump-and-tag:
+    name: Bump version & tag
+    runs-on: ubuntu-latest
+    outputs:
+      tagged: ${{ steps.bump.outputs.tagged }}
+      new_tag: ${{ steps.bump.outputs.new_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for binary changes since last tag
+        id: changed
+        run: |
+          LATEST_TAG=$(git tag -l 'v*' --sort=-version:refname | head -n1)
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No existing tags found — treating as first release."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "base=HEAD~1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+          echo "base=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+          CHANGED=$(git diff --name-only "$LATEST_TAG"..HEAD -- \
+            cmd/xbctl/ cmd/xboard-node/ internal/ go.mod go.sum)
+          if [ -n "$CHANGED" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Changed files:"
+            echo "$CHANGED"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No binary-related changes since $LATEST_TAG."
+          fi
+
+      - name: Determine version bump
+        id: bump
+        if: steps.changed.outputs.has_changes == 'true'
+        run: |
+          BASE=${{ steps.changed.outputs.base }}
+          COMMITS=$(git log --format='%s' "$BASE"..HEAD)
+
+          if [ -z "$COMMITS" ]; then
+            echo "No new commits."
+            echo "tagged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Determine bump level from commit prefixes.
+          # Priority: breaking > feat > perf/fix > chore/other (no auto-bump)
+          BUMP=""
+          while IFS= read -r msg; do
+            lower=$(echo "$msg" | tr '[:upper:]' '[:lower:]')
+            if echo "$lower" | grep -qE '^[a-z]+(\(.+\))?!:' || echo "$lower" | grep -qi 'breaking.change'; then
+              BUMP="major"
+              break
+            fi
+            if echo "$lower" | grep -qE '^feat(\(.+\))?:'; then
+              [ "$BUMP" != "major" ] && BUMP="minor"
+            fi
+            if echo "$lower" | grep -qE '^(fix|perf)(\(.+\))?:'; then
+              [ -z "$BUMP" ] && BUMP="patch"
+            fi
+          done <<< "$COMMITS"
+
+          if [ -z "$BUMP" ]; then
+            echo "No feat/fix/breaking commits found — skipping release."
+            echo "tagged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LATEST_TAG=${{ steps.changed.outputs.latest_tag }}
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.0.0"
+          fi
+
+          # Strip leading 'v' and parse semver
+          VERSION=${LATEST_TAG#v}
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+          # Default to 0 if empty (e.g. v1.10 has no patch)
+          : "${PATCH:=0}"
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "Bump: $BUMP | $LATEST_TAG → $NEW_TAG"
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          echo "tagged=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        if: steps.bump.outputs.tagged == 'true'
+        run: |
+          TAG=${{ steps.bump.outputs.new_tag }}
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — skipping."
+            exit 0
+          fi
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Pushed tag $TAG — CI will build & release automatically."

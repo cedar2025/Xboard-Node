@@ -8,7 +8,7 @@ import (
 
 func TestNodeSpecFromStandalone(t *testing.T) {
 	cfg := &config.Config{
-		Kernel: config.KernelConfig{Type: "xray", LogLevel: "info"},
+		Kernel: config.KernelConfig{LogLevel: "info"},
 		Standalone: &config.StandaloneConfig{
 			Enabled: true,
 			Node: config.StandaloneNodeConfig{

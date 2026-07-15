@@ -122,8 +122,10 @@ func (m *NodeMailbox) DrainIfReady() MailboxState {
 	}
 	state := MailboxState{NeedsReconcile: m.needsReconcile}
 	if m.dirtyConfig && m.config != nil {
-		state.Config = cloneNodeSpec(m.config)
+		// Transfer ownership: swap out the stored config instead of cloning.
+		state.Config = m.config
 		state.HasConfig = true
+		m.config = nil
 		m.dirtyConfig = false
 	}
 	if m.dirtyUsers {

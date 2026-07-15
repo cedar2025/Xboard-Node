@@ -49,7 +49,12 @@ jobs:
       - name: Build
         env:
           VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || github.sha }}
+          REPO_BASE: https://github.com/${{ github.repository }}/releases
         run: |
+          # Ensure REPO_BASE is lowercase (GitHub releases URLs are case-insensitive,
+          # but keep it consistent with GHCR image names).
+          REPO_BASE="${REPO_BASE,,}"
+          export REPO_BASE
           if [ "${{ matrix.goarch }}" = "amd64" ]; then
             make build-linux
           else
@@ -91,6 +96,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set image name (lowercase)
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
@@ -98,9 +107,9 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/cedar2025/xboard-node:latest
-            ghcr.io/cedar2025/xboard-node:${{ github.sha }}
-            ${{ startsWith(github.ref, 'refs/tags/') && format('ghcr.io/cedar2025/xboard-node:{0}', github.ref_name) || '' }}
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+            ${{ startsWith(github.ref, 'refs/tags/') && format('{0}:{1}', steps.image.outputs.name, github.ref_name) || '' }}
 
   release:
     name: Release
@@ -121,6 +130,7 @@ jobs:
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}
           make_latest: ${{ startsWith(github.ref, 'refs/tags/') }}
+          generate_release_notes: true
           files: |
             dist/xboard-node-linux-amd64
             dist/xboard-node-linux-arm64

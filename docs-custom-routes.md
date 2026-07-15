@@ -53,10 +53,10 @@
 
 ## Kernel Compatibility
 
-| Feature | Xray | Sing-box |
-|---------|------|----------|
-| All match conditions | ✅ | ✅ |
-| direct / block / route | ✅ | ✅ |
+| Feature | Xray | Sing-box | Mihomo |
+|---------|------|----------|--------|
+| All match conditions | ✅ | ✅ | ✅ |
+| direct / block / route | ✅ | ✅ | ✅ |
 
 ## Best Practices
 

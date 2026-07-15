@@ -25,20 +25,20 @@
 
 ## Supported Protocols
 
-| Protocol | Xray | Sing-box |
-|----------|------|----------|
-| vmess | ✅ | ✅ |
-| vless | ✅ | ✅ |
-| trojan | ✅ | ✅ |
-| shadowsocks | ✅ | ✅ |
-| socks | ✅ | ✅ |
-| http | ✅ | ✅ |
-| wireguard | ✅ | ✅ |
-| tuic | ❌ | ✅ |
-| hysteria2 | ❌ | ✅ |
-| anytls | ❌ | ✅ |
-| naive | ❌ | ✅ |
-| mieru | ❌ | ✅ |
+| Protocol | Xray | Sing-box | Mihomo |
+|----------|------|----------|--------|
+| vmess | ✅ | ✅ | ✅ |
+| vless | ✅ | ✅ | ✅ |
+| trojan | ✅ | ✅ | ✅ |
+| shadowsocks | ✅ | ✅ | ✅ |
+| socks | ✅ | ✅ | ✅ |
+| http | ✅ | ✅ | ✅ |
+| wireguard | ✅ | ✅ | ✅ |
+| tuic | ❌ | ✅ | ✅ |
+| hysteria2 | ❌ | ✅ | ✅ |
+| anytls | ❌ | ✅ | ❌ |
+| naive | ❌ | ✅ | ❌ |
+| mieru | ❌ | ✅ | ❌ |
 
 ## Core Fields
 

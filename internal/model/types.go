@@ -43,6 +43,15 @@ type NodeSpec struct {
 	Transport         string
 	TrafficPattern    string
 
+	// Sudoku
+	SudokuConfig *SudokuConfig
+
+	// TrustTunnel
+	TrustTunnelNetwork              []string
+	TrustTunnelCongestionController string
+	TrustTunnelCWND                 int
+	TrustTunnelBBRProfile           string
+
 	Multiplex           *MultiplexConfig
 	AcceptProxyProtocol bool
 }
@@ -75,6 +84,21 @@ type BrutalConfig struct {
 	Enabled  bool
 	UpMbps   int
 	DownMbps int
+}
+
+type SudokuConfig struct {
+	AEADMethod         string
+	PaddingMin         *int
+	PaddingMax         *int
+	TableType          string
+	HandshakeTimeout   *int
+	EnablePureDownlink *bool
+	CustomTable        string
+	CustomTables       []string
+	DisableHTTPMask    bool
+	HTTPMaskMode       string
+	PathRoot           string
+	Fallback           string
 }
 
 type UserSpec struct {

@@ -200,8 +200,7 @@ func TestApplyUserDeltaAddPreparesLimiterBeforeKernelUpdate(t *testing.T) {
 
 
 func TestValidateNodeRuntimeRejectsUnsupportedDNSProvider(t *testing.T) {
-	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
-	err := validateNodeRuntime(cfg, []string{"http"}, &model.NodeSpec{
+	err := validateNodeRuntime( []string{"http"}, &model.NodeSpec{
 		Protocol: "http",
 		CertConfig: &config.CertConfig{
 			CertMode:    "dns",
@@ -221,8 +220,7 @@ func TestValidateNodeRuntimeRejectsUnsupportedDNSProvider(t *testing.T) {
 }
 
 func TestValidateNodeRuntimeAllowsSelfManagedTLSBeforeFilesExist(t *testing.T) {
-	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
-	err := validateNodeRuntime(cfg, []string{"anytls", "hysteria"}, &model.NodeSpec{
+	err := validateNodeRuntime( []string{"anytls", "hysteria"}, &model.NodeSpec{
 		Protocol: "anytls",
 		CertConfig: &config.CertConfig{
 			CertMode: "self",
@@ -235,8 +233,7 @@ func TestValidateNodeRuntimeAllowsSelfManagedTLSBeforeFilesExist(t *testing.T) {
 }
 
 func TestValidateNodeRuntimeAllowsSingboxRealityWithRequiredFields(t *testing.T) {
-	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
-	err := validateNodeRuntime(cfg, []string{"vless"}, &model.NodeSpec{
+	err := validateNodeRuntime( []string{"vless"}, &model.NodeSpec{
 		Protocol: "vless",
 		TLS:      2,
 		TLSSettings: map[string]any{
@@ -250,8 +247,7 @@ func TestValidateNodeRuntimeAllowsSingboxRealityWithRequiredFields(t *testing.T)
 }
 
 func TestValidateNodeRuntimeRejectsRealityWithoutTLSSettings(t *testing.T) {
-	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
-	err := validateNodeRuntime(cfg, []string{"vless"}, &model.NodeSpec{
+	err := validateNodeRuntime( []string{"vless"}, &model.NodeSpec{
 		Protocol: "vless",
 		TLS:      2,
 	}, kernel.TLSCert{CertPEM: []byte("CERT"), KeyPEM: []byte("KEY")})
@@ -264,8 +260,7 @@ func TestValidateNodeRuntimeRejectsRealityWithoutTLSSettings(t *testing.T) {
 }
 
 func TestValidateNodeRuntimeRejectsRealityWithoutPrivateKey(t *testing.T) {
-	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
-	err := validateNodeRuntime(cfg, []string{"vless"}, &model.NodeSpec{
+	err := validateNodeRuntime( []string{"vless"}, &model.NodeSpec{
 		Protocol: "vless",
 		TLS:      2,
 		TLSSettings: map[string]any{
@@ -281,8 +276,7 @@ func TestValidateNodeRuntimeRejectsRealityWithoutPrivateKey(t *testing.T) {
 }
 
 func TestValidateNodeRuntimeRejectsRealityWithoutServerNameOrDest(t *testing.T) {
-	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
-	err := validateNodeRuntime(cfg, []string{"vless"}, &model.NodeSpec{
+	err := validateNodeRuntime( []string{"vless"}, &model.NodeSpec{
 		Protocol: "vless",
 		TLS:      2,
 		TLSSettings: map[string]any{

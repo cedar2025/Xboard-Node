@@ -27,11 +27,38 @@ const (
 	defaultCredentialsPath = "/etc/xboard-node/credentials.env"
 	defaultBinaryPath      = "/usr/local/bin/xboard-node"
 	defaultCLIPath         = "/usr/local/bin/xbctl"
-	serviceName            = "xboard-node.service"
-	serviceFilePath        = "/etc/systemd/system/xboard-node.service"
-	defaultInstallRoot     = "/etc/xboard-node"
-	downloadBase           = "https://github.com/cedar2025/xboard-node/releases"
+	serviceName            = "xboard-node"
+	systemdServiceFilePath = "/etc/systemd/system/xboard-node.service"
+	openrcInitScript       = "/etc/init.d/xboard-node"
+	defaultInstallRoot = "/etc/xboard-node"
 )
+
+// Set via ldflags at build time: -X main.downloadBase=...
+var downloadBase = "https://github.com/cedar2025/xboard-node/releases"
+
+// initSystem returns "systemd", "openrc", or "unknown".
+func initSystem() string {
+	if _, err := os.Stat("/run/systemd/system"); err == nil {
+		if _, err2 := exec.LookPath("systemctl"); err2 == nil {
+			return "systemd"
+		}
+	}
+	if _, err := exec.LookPath("rc-service"); err == nil {
+		return "openrc"
+	}
+	if _, err := os.Stat("/etc/init.d"); err == nil {
+		return "openrc"
+	}
+	return "unknown"
+}
+
+// serviceFilePath returns the path for the service/init file.
+func serviceFilePath() string {
+	if initSystem() == "openrc" {
+		return openrcInitScript
+	}
+	return systemdServiceFilePath
+}
 
 var (
 	version   = "dev"
@@ -92,7 +119,6 @@ type fileNodeConfig struct {
 }
 
 type fileKernelConfig struct {
-	Type         string           `yaml:"type"`
 	ConfigDir    string           `yaml:"config_dir"`
 	LogLevel     string           `yaml:"log_level,omitempty"`
 	GeoDataDir   string           `yaml:"geo_data_dir,omitempty"`
@@ -206,8 +232,8 @@ func printUsage() {
   xbctl config health-port [--config PATH]
   xbctl service status|start|stop|restart|enable|disable|logs
   xbctl health
-  xbctl bind add-node --panel-url URL --token TOKEN --node-id ID [--node-type TYPE] [--kernel singbox|xray]
-  xbctl bind add-machine --panel-url URL --token TOKEN --machine-id ID [--kernel singbox|xray]
+  xbctl bind add-node --panel-url URL --token TOKEN --node-id ID [--node-type TYPE]
+  xbctl bind add-machine --panel-url URL --token TOKEN --machine-id ID
   xbctl bind remove <instance-id>
   xbctl bind remove-node --panel URL --node-id ID
   xbctl bind remove-machine --panel URL --machine-id ID
@@ -295,16 +321,40 @@ func runService(args []string) error {
 	}
 	sub := args[0]
 	rest := args[1:]
+	init := initSystem()
 	switch sub {
 	case "status":
-		return runCommand("sudo", append([]string{"systemctl", "status", serviceName, "--no-pager"}, rest...)...)
-	case "start", "stop", "restart", "enable", "disable":
+		if init == "openrc" {
+			return runCommand("sudo", append([]string{"rc-service", serviceName, "status"}, rest...)...)
+		}
+		return runCommand("sudo", append([]string{"systemctl", "status", serviceName+".service", "--no-pager"}, rest...)...)
+	case "start", "stop", "restart":
+		if init == "openrc" {
+			return runCommand("sudo", append([]string{"rc-service", serviceName, sub}, rest...)...)
+		}
 		return runCommand("sudo", append([]string{"systemctl", sub, serviceName}, rest...)...)
+	case "enable":
+		if init == "openrc" {
+			return runCommand("sudo", "rc-update", "add", serviceName, "default")
+		}
+		return runCommand("sudo", "systemctl", "enable", serviceName)
+	case "disable":
+		if init == "openrc" {
+			return runCommand("sudo", "rc-update", "del", serviceName, "default")
+		}
+		return runCommand("sudo", "systemctl", "disable", serviceName)
 	case "logs":
+		if init == "openrc" {
+			logFile := "/var/log/xboard-node.log"
+			if len(rest) == 0 {
+				return runCommand("tail", "-f", logFile)
+			}
+			return runCommand("tail", append(rest, logFile)...)
+		}
 		if len(rest) == 0 {
 			rest = []string{"-f"}
 		}
-		return runCommand("sudo", append([]string{"journalctl", "-u", serviceName}, rest...)...)
+		return runCommand("sudo", append([]string{"journalctl", "-u", serviceName + ".service"}, rest...)...)
 	default:
 		return fmt.Errorf("unknown service command: %s", sub)
 	}
@@ -374,7 +424,13 @@ func runBindAdd(mode string, args []string) error {
 	}
 	// Restart service to pick up new config
 	fmt.Println("Restarting service...")
-	if err := runCommand("systemctl", "restart", serviceName); err != nil {
+	var err error
+	if initSystem() == "openrc" {
+		err = runCommand("rc-service", serviceName, "restart")
+	} else {
+		err = runCommand("systemctl", "restart", serviceName)
+	}
+	if err != nil {
 		return fmt.Errorf("service restart failed: %w", err)
 	}
 	fmt.Println("Binding added successfully")
@@ -468,8 +524,17 @@ func runUpgrade(args []string) error {
 
 	// Restart service
 	fmt.Println("Restarting service...")
-	runCommand("systemctl", "daemon-reload")
-	if err := runCommand("systemctl", "restart", serviceName); err != nil {
+	init := initSystem()
+	if init == "systemd" {
+		runCommand("systemctl", "daemon-reload")
+	}
+	restartCmd := func() error {
+		if init == "openrc" {
+			return runCommand("rc-service", serviceName, "restart")
+		}
+		return runCommand("systemctl", "restart", serviceName)
+	}
+	if err := restartCmd(); err != nil {
 		fmt.Println("Restart failed, rolling back...")
 		rollbackOK := true
 		if fileExists(backupBinary) {
@@ -484,8 +549,10 @@ func runUpgrade(args []string) error {
 				rollbackOK = false
 			}
 		}
-		runCommand("systemctl", "daemon-reload")
-		if e := runCommand("systemctl", "restart", serviceName); e != nil {
+		if init == "systemd" {
+			runCommand("systemctl", "daemon-reload")
+		}
+		if e := restartCmd(); e != nil {
 			return fmt.Errorf("upgrade and rollback restart both failed: %w", e)
 		}
 		if rollbackOK {
@@ -541,17 +608,29 @@ func runUninstall(args []string) error {
 	var warnings []string
 
 	// Stop and disable service
-	if fileExists(serviceFilePath) {
-		if err := runCommand("systemctl", "stop", serviceName); err != nil {
-			warnings = append(warnings, fmt.Sprintf("stop service: %v", err))
+	svcFile := serviceFilePath()
+	init := initSystem()
+	if fileExists(svcFile) {
+		var stopErr, disableErr error
+		if init == "openrc" {
+			stopErr = runCommand("rc-service", serviceName, "stop")
+			disableErr = runCommand("rc-update", "del", serviceName, "default")
+		} else {
+			stopErr = runCommand("systemctl", "stop", serviceName)
+			disableErr = runCommand("systemctl", "disable", serviceName)
 		}
-		if err := runCommand("systemctl", "disable", serviceName); err != nil {
-			warnings = append(warnings, fmt.Sprintf("disable service: %v", err))
+		if stopErr != nil {
+			warnings = append(warnings, fmt.Sprintf("stop service: %v", stopErr))
 		}
-		if err := os.Remove(serviceFilePath); err != nil {
+		if disableErr != nil {
+			warnings = append(warnings, fmt.Sprintf("disable service: %v", disableErr))
+		}
+		if err := os.Remove(svcFile); err != nil {
 			warnings = append(warnings, fmt.Sprintf("remove service file: %v", err))
 		}
-		runCommand("systemctl", "daemon-reload")
+		if init == "systemd" {
+			runCommand("systemctl", "daemon-reload")
+		}
 	}
 
 	// Remove binaries
@@ -782,7 +861,11 @@ func removeBinding(panelURL string, nodeID int, machineID int, instanceID string
 		if err := writeInstallMeta(defaultMetaPath, root); err != nil {
 			return err
 		}
-		runCommand("systemctl", "stop", serviceName)
+		if initSystem() == "openrc" {
+			runCommand("rc-service", serviceName, "stop")
+		} else {
+			runCommand("systemctl", "stop", serviceName)
+		}
 		fmt.Printf("removed %d binding(s)\n", len(removed))
 		fmt.Println("All bindings removed. Service stopped.")
 		fmt.Println("Use 'xbctl bind add-node/add-machine' to add a new binding, or 'xbctl uninstall' to fully uninstall.")
@@ -800,8 +883,14 @@ func removeBinding(panelURL string, nodeID int, machineID int, instanceID string
 	if err := writeInstallMeta(defaultMetaPath, root); err != nil {
 		return err
 	}
-	if err := runCommand("systemctl", "restart", serviceName); err != nil {
-		return err
+	var svcRestartErr error
+	if initSystem() == "openrc" {
+		svcRestartErr = runCommand("rc-service", serviceName, "restart")
+	} else {
+		svcRestartErr = runCommand("systemctl", "restart", serviceName)
+	}
+	if svcRestartErr != nil {
+		return svcRestartErr
 	}
 	fmt.Printf("removed %d binding(s)\n", len(removed))
 	return nil
@@ -849,8 +938,8 @@ func writeRootConfig(path string, root *config.RootConfig) error {
 	if p.Log.Level != "" || p.Log.Output != "" {
 		out.Log = &fileLogConfig{Level: p.Log.Level, Output: p.Log.Output}
 	}
-	if p.Kernel.Type != "" || p.Kernel.LogLevel != "" {
-		out.Kernel = &fileKernelConfig{Type: p.Kernel.Type, LogLevel: p.Kernel.LogLevel}
+	if p.Kernel.LogLevel != "" {
+		out.Kernel = &fileKernelConfig{LogLevel: p.Kernel.LogLevel}
 	}
 	if p.Node.PushInterval != 0 || p.Node.PullInterval != 0 || p.Node.TrackInterval != 0 || p.Node.DeviceReportInterval != 0 {
 		out.Node = &fileNodeConfig{
@@ -880,7 +969,6 @@ func writeRootConfig(path string, root *config.RootConfig) error {
 				NodeType: inst.Panel.NodeType,
 			},
 			Kernel: fileKernelConfig{
-				Type:         inst.Kernel.Type,
 				ConfigDir:    inst.Kernel.ConfigDir,
 				LogLevel:     inst.Kernel.LogLevel,
 				GeoDataDir:   inst.Kernel.GeoDataDir,
@@ -1069,6 +1157,17 @@ func printRows(rows []instanceRow, output string) error {
 }
 
 func systemctlState() string {
+	if initSystem() == "openrc" {
+		cmd := exec.Command("rc-service", serviceName, "status")
+		if err := cmd.Run(); err == nil {
+			return "active"
+		}
+		// check if the init script exists at all
+		if _, err := os.Stat(openrcInitScript); err != nil {
+			return "not-installed"
+		}
+		return "inactive"
+	}
 	cmd := exec.Command("systemctl", "is-active", serviceName)
 	out, err := cmd.CombinedOutput()
 	state := strings.TrimSpace(string(out))
@@ -1155,9 +1254,36 @@ func latestInstanceID(instances []*config.Config) string {
 }
 
 func regenerateServiceFile() error {
+	if initSystem() == "openrc" {
+		script := `#!/sbin/openrc-run
+
+description="Xboard Node Backend"
+command="/usr/local/bin/xboard-node"
+command_args="-c /etc/xboard-node/config.yml"
+command_background=true
+pidfile="/run/xboard-node.pid"
+output_log="/var/log/xboard-node.log"
+error_log="/var/log/xboard-node.log"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    if [ -f /etc/xboard-node/credentials.env ]; then
+        set -a
+        . /etc/xboard-node/credentials.env
+        set +a
+    fi
+    touch "$output_log"
+}
+`
+		return os.WriteFile(openrcInitScript, []byte(script), 0o755)
+	}
 	unit := fmt.Sprintf(`[Unit]
 Description=Xboard Node Backend
-Documentation=https://github.com/cedar2025/xboard-node
+Documentation=%s
 After=network-online.target
 Wants=network-online.target
 
@@ -1175,8 +1301,8 @@ StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-`, defaultInstallRoot, defaultCredentialsPath, defaultBinaryPath, defaultConfigPath)
-	return os.WriteFile(serviceFilePath, []byte(unit), 0o644)
+`, strings.TrimSuffix(downloadBase, "/releases"), defaultInstallRoot, defaultCredentialsPath, defaultBinaryPath, defaultConfigPath)
+	return os.WriteFile(systemdServiceFilePath, []byte(unit), 0o644)
 }
 
 func machineIDPtr(cfg *config.Config) *int {
@@ -1223,7 +1349,6 @@ func runConfigInit(args []string) error {
 		nodeID         int
 		nodeType       string
 		machineID      int
-		kernelType     string
 		healthPort     int
 		gomemlimit     string
 		gogc           int
@@ -1275,9 +1400,6 @@ func runConfigInit(args []string) error {
 				return fmt.Errorf("invalid --machine-id: %w", err)
 			}
 			machineID = v
-		case "--kernel":
-			i++
-			kernelType = args[i]
 		case "--health-port":
 			i++
 			v, err := strconv.Atoi(args[i])
@@ -1324,7 +1446,6 @@ func runConfigInit(args []string) error {
 	inst := config.Config{
 		Panel: config.PanelConfig{URL: panelURL},
 		Kernel: config.KernelConfig{
-			Type:     kernelType,
 			LogLevel: "warn",
 		},
 		Log:        config.LogConfig{Level: "info", Output: "stdout"},
@@ -1375,7 +1496,7 @@ func runConfigInit(args []string) error {
 	if configIn != "" {
 		if loaded, loadErr := loadWritableRootConfig(configIn); loadErr == nil {
 			root = loaded
-			hasExisting = len(root.Instances) > 0 || root.Config.Panel.URL != "" || root.Config.Kernel.Type != ""
+			hasExisting = len(root.Instances) > 0 || root.Config.Panel.URL != ""
 		}
 	}
 

@@ -46,9 +46,6 @@ log:
 	if cfg.Panel.NodeType != "v2ray" {
 		t.Errorf("node_type: got %q", cfg.Panel.NodeType)
 	}
-	if cfg.Kernel.Type != "singbox" {
-		t.Errorf("kernel.type: got %q", cfg.Kernel.Type)
-	}
 	if cfg.Log.Level != "debug" {
 		t.Errorf("log.level: got %q", cfg.Log.Level)
 	}
@@ -64,9 +61,6 @@ panel:
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Kernel.Type != "singbox" {
-		t.Errorf("default kernel.type: got %q, want singbox", cfg.Kernel.Type)
 	}
 	// config_dir should default to the directory containing the config file.
 	expectedDir := filepath.Dir(path)
@@ -138,39 +132,6 @@ panel:
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("expected error for negative node_id")
-	}
-}
-
-func TestLoad_InvalidKernelType(t *testing.T) {
-	path := writeTemp(t, `
-panel:
-  url: "https://example.com"
-  token: "tok"
-  node_id: 1
-kernel:
-  type: "invalid"
-`)
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error for invalid kernel type")
-	}
-}
-
-func TestLoad_XrayKernel(t *testing.T) {
-	path := writeTemp(t, `
-panel:
-  url: "https://example.com"
-  token: "tok"
-  node_id: 1
-kernel:
-  type: xray
-`)
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Kernel.Type != "xray" {
-		t.Errorf("kernel.type: got %q, want xray", cfg.Kernel.Type)
 	}
 }
 
@@ -449,9 +410,6 @@ instances:
 	if inst0.Log.Output != "stderr" {
 		t.Errorf("inst0 log.output: got %q, want %q", inst0.Log.Output, "stderr")
 	}
-	if inst0.Kernel.Type != "xray" {
-		t.Errorf("inst0 kernel.type: got %q, want %q", inst0.Kernel.Type, "xray")
-	}
 	if inst0.Kernel.LogLevel != "error" {
 		t.Errorf("inst0 kernel.log_level: got %q, want %q", inst0.Kernel.LogLevel, "error")
 	}
@@ -468,9 +426,6 @@ instances:
 	}
 	if inst1.Log.Output != "stderr" {
 		t.Errorf("inst1 log.output: got %q, want %q", inst1.Log.Output, "stderr")
-	}
-	if inst1.Kernel.Type != "xray" {
-		t.Errorf("inst1 kernel.type: got %q, want %q", inst1.Kernel.Type, "xray")
 	}
 }
 

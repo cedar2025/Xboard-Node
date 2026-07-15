@@ -15,7 +15,7 @@ func TestPanelControlPlaneInitialRejectsInvalidCustomOutbounds(t *testing.T) {
 	server := newPanelTestServer(`{"protocol":"shadowsocks","server_port":8388,"custom_outbounds":[{"tag":"proxy","protocol":"socks","proxy_tag":"missing","settings":{"server":"2.2.2.2","server_port":1080}}]}`)
 	defer server.Close()
 
-	cp := NewPanelControlPlane(config.PanelConfig{URL: server.URL, Token: "token", NodeID: 1}, config.WSConfig{}, config.KernelConfig{Type: "singbox"})
+	cp := NewPanelControlPlane(config.PanelConfig{URL: server.URL, Token: "token", NodeID: 1}, config.WSConfig{}, config.KernelConfig{})
 	_, err := cp.Initial(context.Background(), nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -29,7 +29,7 @@ func TestPanelControlPlanePollRejectsInvalidCustomOutbounds(t *testing.T) {
 	server := newPanelTestServer(`{"protocol":"shadowsocks","server_port":8388,"custom_outbounds":[{"tag":"proxy","protocol":"socks","proxy_tag":"missing","settings":{"server":"2.2.2.2","server_port":1080}}]}`)
 	defer server.Close()
 
-	cp := NewPanelControlPlane(config.PanelConfig{URL: server.URL, Token: "token", NodeID: 1}, config.WSConfig{}, config.KernelConfig{Type: "singbox"})
+	cp := NewPanelControlPlane(config.PanelConfig{URL: server.URL, Token: "token", NodeID: 1}, config.WSConfig{}, config.KernelConfig{})
 	_, err := cp.Poll(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -49,7 +49,7 @@ func TestTranslateWSEventRejectsInvalidCustomOutbounds(t *testing.T) {
 				{Tag: "proxy", Protocol: "socks", ProxyTag: "missing", Settings: map[string]any{"server": "2.2.2.2", "server_port": 1080}},
 			},
 		},
-	}, config.KernelConfig{Type: "singbox"})
+	}, config.KernelConfig{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -85,7 +85,7 @@ func TestTranslateWSEventRejectsUnsupportedProtocolForKernel(t *testing.T) {
 				{Tag: "hy2", Protocol: "hysteria2", Settings: map[string]any{"server": "2.2.2.2", "server_port": 8443}},
 			},
 		},
-	}, config.KernelConfig{Type: "xray"})
+	}, config.KernelConfig{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

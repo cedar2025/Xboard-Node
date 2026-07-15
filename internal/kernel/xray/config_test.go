@@ -470,7 +470,7 @@ func TestBuildConfig_Shadowsocks_MultiUser(t *testing.T) {
 		Protocol:   "shadowsocks",
 		ServerPort: 8388,
 		Cipher:     "2022-blake3-aes-128-gcm",
-		ServerKey:  "server-key",
+		ServerKey:  "c2VydmVyLWtleS0xMjM0NQ==",
 	}
 	cfg := buildConfig(testKernelCfg, testNodeSpec(&nc), testUsers, kernel.TLSCert{})
 	data, _ := json.Marshal(cfg)
@@ -482,7 +482,7 @@ func TestBuildConfig_Shadowsocks_MultiUser(t *testing.T) {
 	ib := inbounds[0].(map[string]interface{})
 	settings := ib["settings"].(map[string]interface{})
 
-	if settings["password"] != "server-key" {
+	if settings["password"] != "c2VydmVyLWtleS0xMjM0NQ==" {
 		t.Errorf("expected server key, got %v", settings["password"])
 	}
 	clients := settings["clients"].([]interface{})
@@ -568,6 +568,44 @@ func TestExtractECHServerKeys(t *testing.T) {
 			got := extractECHServerKeys(tt.tls)
 			if got != tt.expect {
 				t.Errorf("got %q, want %q", got, tt.expect)
+			}
+		})
+	}
+}
+
+func TestNormalizeSS2022Key(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		keySize int
+		want    string // empty means expect same as raw
+	}{
+		{"valid base64 16 bytes", "c2VydmVyLWtleS0xMjM0NQ==", 16, ""},
+		{"valid base64 32 bytes", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=", 32, ""},
+		{"raw string 16 bytes", "server-key-12345", 16, "c2VydmVyLWtleS0xMjM0NQ=="},
+		{"short raw", "short", 16, "c2hvcnQAAAAAAAAAAAAAAA=="},
+		{"empty string", "", 16, ""},
+		{"hex key 16 bytes", "7365727665722d6b65792d3132333435", 16, "c2VydmVyLWtleS0xMjM0NQ=="},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeSS2022Key(tt.raw, tt.keySize)
+			expected := tt.want
+			if expected == "" {
+				expected = tt.raw
+			}
+			if got != expected {
+				t.Errorf("normalizeSS2022Key(%q, %d) = %q, want %q", tt.raw, tt.keySize, got, expected)
+			}
+			// Verify result is valid base64 that decodes to correct length
+			if got != "" {
+				decoded, err := base64.StdEncoding.DecodeString(got)
+				if err != nil {
+					t.Errorf("result %q is not valid base64: %v", got, err)
+				}
+				if len(decoded) != tt.keySize {
+					t.Errorf("decoded length = %d, want %d", len(decoded), tt.keySize)
+				}
 			}
 		})
 	}

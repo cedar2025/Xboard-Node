@@ -15,19 +15,19 @@ INSTALL_META="${INSTALL_ROOT}/install-meta.json"
 CONFIG_FILE="${INSTALL_ROOT}/config.yml"
 CREDENTIALS_FILE="${INSTALL_ROOT}/credentials.env"
 BINARY_PATH="/usr/local/bin/xboard-node"
-SERVICE_NAME="xboard-node.service"
-SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
+SERVICE_NAME="xboard-node"
+SERVICE_PATH=""          # set by detect_init_system
+INIT_SYSTEM=""           # systemd | openrc
 CLI_PATH="/usr/local/bin/xbctl"
 INSTALLER_COPY_PATH="${INSTALL_ROOT}/install.sh"
 CLI_BINARY_SOURCE=""
 DEFAULT_HEALTH_PORT=65530
-DEFAULT_KERNEL="singbox"
 DEFAULT_MODE="node"
 DEFAULT_ACTION="install"
 DEFAULT_RELEASE_VERSION="latest"
 DEFAULT_LOG_LEVEL="info"
 DEFAULT_KERNEL_LOG_LEVEL="warn"
-DEFAULT_DOWNLOAD_BASE="https://github.com/cedar2025/xboard-node/releases"
+DEFAULT_DOWNLOAD_BASE="https://github.com/fearless743/xboard-node/releases"
 
 ACTION="${DEFAULT_ACTION}"
 MODE=""
@@ -36,7 +36,6 @@ TOKEN=""
 NODE_ID=""
 NODE_TYPE=""
 MACHINE_ID=""
-KERNEL_TYPE="${DEFAULT_KERNEL}"
 RELEASE_VERSION="${DEFAULT_RELEASE_VERSION}"
 HEALTH_PORT="${DEFAULT_HEALTH_PORT}"
 HEALTH_ENABLED=1
@@ -55,6 +54,8 @@ TMP_DIR=""
 BACKUP_PATH=""
 SERVICE_EXISTED=0
 CLEANUP_DONE=0
+OPENRC_INIT_SCRIPT="/etc/init.d/${SERVICE_NAME}"
+SYSTEMD_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
 log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -120,24 +121,29 @@ rollback_install() {
         else
             rm -f "$CLI_PATH"
         fi
-        if [ -f "$BACKUP_PATH/${SERVICE_NAME}" ]; then
-            install -m 644 "$BACKUP_PATH/${SERVICE_NAME}" "$SERVICE_PATH"
+        if [ -f "$BACKUP_PATH/service-file" ]; then
+            if [ "$INIT_SYSTEM" = "openrc" ]; then
+                install -m 755 "$BACKUP_PATH/service-file" "$SERVICE_PATH"
+            else
+                install -m 644 "$BACKUP_PATH/service-file" "$SERVICE_PATH"
+            fi
         else
             rm -f "$SERVICE_PATH"
         fi
     fi
     load_health_port_from_config "$CONFIG_FILE"
-    systemctl daemon-reload || true
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        systemctl daemon-reload || true
+    fi
     if [ "$SERVICE_EXISTED" -eq 1 ] || [ -f "$SERVICE_PATH" ]; then
-        systemctl reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
-        systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || true
+        service_restart || true
         if ! wait_for_health; then
             log_error "Rollback completed but restored service did not become healthy"
             show_recent_logs
             return 1
         fi
     else
-        systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+        service_disable || true
     fi
     log_warn "Rollback complete"
 }
@@ -185,7 +191,6 @@ usage() {
 
   OPTIONAL:
     --node-type, -T     Explicit node type for node mode
-    --kernel, -k        singbox or xray (default: singbox)
     --version           Release version or latest (default: latest)
     --binary            Use a local xboard-node binary path instead of downloading
     --xbctl-binary      Use a local xbctl binary path instead of downloading
@@ -235,10 +240,6 @@ parse_args() {
                 ;;
             --machine-id)
                 MACHINE_ID="$2"
-                shift 2
-                ;;
-            --kernel|-k)
-                KERNEL_TYPE="$2"
                 shift 2
                 ;;
             --version)
@@ -292,12 +293,6 @@ parse_args() {
         ACTION="${positional[0]}"
     fi
 
-    case "$KERNEL_TYPE" in
-        singbox|SingBox|SINGBOX) KERNEL_TYPE="singbox" ;;
-        xray|Xray|XRAY) KERNEL_TYPE="xray" ;;
-        *) ;;
-    esac
-
     # Auto-detect mode from arguments when --mode is not specified.
     if [ -z "$MODE" ]; then
         if [ -n "$MACHINE_ID" ]; then
@@ -346,14 +341,62 @@ detect_os() {
     fi
 }
 
-ensure_systemd() {
-    if ! command -v systemctl >/dev/null 2>&1; then
-        log_error "systemd is required for this installer"
+detect_init_system() {
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        INIT_SYSTEM="systemd"
+        SERVICE_PATH="$SYSTEMD_SERVICE_FILE"
+        log_info "Detected init system: systemd"
+    elif command -v rc-service >/dev/null 2>&1 || [ -d /etc/init.d ]; then
+        INIT_SYSTEM="openrc"
+        SERVICE_PATH="$OPENRC_INIT_SCRIPT"
+        log_info "Detected init system: OpenRC"
+    else
+        log_error "Neither systemd nor OpenRC detected. Unsupported init system."
         exit 1
     fi
-    if [ ! -d /run/systemd/system ]; then
-        log_error "This host does not appear to be running systemd"
-        exit 1
+}
+
+# ── Init-system-agnostic helpers ────────────────────────────────────────────
+service_start()   {
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        systemctl start "$SERVICE_NAME"
+    else
+        rc-service "$SERVICE_NAME" start
+    fi
+}
+service_stop()    {
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        systemctl stop  "$SERVICE_NAME" >/dev/null 2>&1 || true
+    else
+        rc-service "$SERVICE_NAME" stop  >/dev/null 2>&1 || true
+    fi
+}
+service_restart() {
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        systemctl restart "$SERVICE_NAME"
+    else
+        rc-service "$SERVICE_NAME" restart
+    fi
+}
+service_enable()  {
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+    else
+        rc-update add "$SERVICE_NAME" default >/dev/null 2>&1 || true
+    fi
+}
+service_disable() {
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+    else
+        rc-update del "$SERVICE_NAME" default >/dev/null 2>&1 || true
+    fi
+}
+service_is_active() {
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1
+    else
+        rc-service "$SERVICE_NAME" status >/dev/null 2>&1
     fi
 }
 
@@ -386,6 +429,13 @@ install_dependencies() {
                 run_with_retry 5 3 dnf install -y -q curl wget ca-certificates >/dev/null 2>&1
             else
                 run_with_retry 5 3 yum install -y -q curl wget ca-certificates >/dev/null 2>&1
+            fi
+            ;;
+        alpine)
+            run_with_retry 5 3 apk add --no-cache curl ca-certificates >/dev/null 2>&1
+            # Ensure OpenRC is available (it always is on Alpine, but be safe)
+            if [ "$INIT_SYSTEM" = "openrc" ] && ! command -v rc-service >/dev/null 2>&1; then
+                run_with_retry 3 2 apk add --no-cache openrc >/dev/null 2>&1
             fi
             ;;
         *)
@@ -424,13 +474,6 @@ validate_install_request() {
     if [ "$HEALTH_PORT" -eq 0 ]; then
         HEALTH_ENABLED=0
     fi
-    case "$KERNEL_TYPE" in
-        singbox|xray) ;;
-        *)
-            log_error "Kernel must be singbox or xray"
-            exit 1
-            ;;
-    esac
     case "$MODE" in
         node)
             validate_positive_int "Node ID" "$NODE_ID"
@@ -467,6 +510,13 @@ select_binary_source() {
             exit 1
         fi
         echo "$BINARY_SOURCE"
+        return
+    fi
+    # Reuse already-installed binary if it validates successfully.
+    # Never do this during "upgrade" -- that would just reinstall the old version.
+    if [ "$ACTION" != "upgrade" ] && [ -x "$BINARY_PATH" ] && "$BINARY_PATH" -v >/dev/null 2>&1; then
+        log_step "Reusing existing binary: ${BINARY_PATH}" >&2
+        echo "$BINARY_PATH"
         return
     fi
     if [ -f "./xboard-node" ]; then
@@ -520,6 +570,9 @@ stage_xbctl() {
             exit 1
         fi
         local_src="$CLI_BINARY_SOURCE"
+    elif [ "$ACTION" != "upgrade" ] && [ -x "$CLI_PATH" ] && "$CLI_PATH" version >/dev/null 2>&1; then
+        log_step "Reusing existing xbctl: ${CLI_PATH}"
+        local_src="$CLI_PATH"
     elif [ -f "./xbctl" ]; then
         local_src="./xbctl"
     elif [ -f "./xbctl-linux-${ARCH}" ]; then
@@ -548,7 +601,6 @@ render_config() {
         config init
         --mode "$MODE"
         --panel-url "$PANEL_URL"
-        --kernel "${KERNEL_TYPE:-singbox}"
         --health-port "${HEALTH_PORT:-0}"
         --token "$TOKEN"
         --version "$RELEASE_VERSION"
@@ -589,7 +641,15 @@ render_config() {
 }
 
 render_service() {
-    cat >"$TMP_DIR/${SERVICE_NAME}" <<EOF_UNIT
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        _render_systemd_service
+    else
+        _render_openrc_service
+    fi
+}
+
+_render_systemd_service() {
+    cat >"$TMP_DIR/service-file" <<EOF_UNIT
 [Unit]
 Description=Xboard Node Backend
 Documentation=https://github.com/cedar2025/xboard-node
@@ -613,6 +673,37 @@ WantedBy=multi-user.target
 EOF_UNIT
 }
 
+_render_openrc_service() {
+    # OpenRC init script for Alpine Linux
+    cat >"$TMP_DIR/service-file" <<'EOF_RC'
+#!/sbin/openrc-run
+
+description="Xboard Node Backend"
+command="/usr/local/bin/xboard-node"
+command_args="-c /etc/xboard-node/config.yml"
+command_background=true
+pidfile="/run/xboard-node.pid"
+output_log="/var/log/xboard-node.log"
+error_log="/var/log/xboard-node.log"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    # Load credentials if present and explicitly export them
+    if [ -f /etc/xboard-node/credentials.env ]; then
+        set -a
+        . /etc/xboard-node/credentials.env
+        set +a
+    fi
+    # Ensure log file exists
+    touch "$output_log"
+}
+EOF_RC
+}
+
 backup_existing_state() {
     BACKUP_PATH="${BACKUP_DIR}/$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$BACKUP_PATH"
@@ -632,7 +723,7 @@ backup_existing_state() {
         cp "$INSTALL_META" "$BACKUP_PATH/install-meta.json"
     fi
     if [ -f "$SERVICE_PATH" ]; then
-        cp "$SERVICE_PATH" "$BACKUP_PATH/${SERVICE_NAME}"
+        cp "$SERVICE_PATH" "$BACKUP_PATH/service-file"
         SERVICE_EXISTED=1
     else
         SERVICE_EXISTED=0
@@ -640,8 +731,8 @@ backup_existing_state() {
 }
 
 stop_existing_service() {
-    if [ -f "$SERVICE_PATH" ] || systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
-        systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+    if [ -f "$SERVICE_PATH" ] || service_is_active 2>/dev/null; then
+        service_stop
     fi
 }
 
@@ -656,13 +747,17 @@ install_staged_files() {
     fi
     install -m 755 "$TMP_DIR/xbctl" "$CLI_PATH"
     ln -sf "$CLI_PATH" /usr/bin/xbctl 2>/dev/null || true
-    install -m 644 "$TMP_DIR/${SERVICE_NAME}" "$SERVICE_PATH"
-    systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        install -m 644 "$TMP_DIR/service-file" "$SERVICE_PATH"
+        systemctl daemon-reload
+    else
+        install -m 755 "$TMP_DIR/service-file" "$SERVICE_PATH"
+    fi
+    service_enable
 }
 
 wait_for_health() {
-    if ! systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+    if ! service_is_active; then
         return 1
     fi
     if [ "$HEALTH_ENABLED" -eq 0 ]; then
@@ -671,7 +766,7 @@ wait_for_health() {
     local attempt=0
     local max_attempts=30
     while [ "$attempt" -lt "$max_attempts" ]; do
-        if ! systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+        if ! service_is_active; then
             return 1
         fi
         if curl -fsS "http://127.0.0.1:${HEALTH_PORT}/healthz" >/dev/null 2>&1; then
@@ -684,17 +779,15 @@ wait_for_health() {
 }
 
 show_recent_logs() {
-    if command -v journalctl >/dev/null 2>&1; then
-        journalctl -u "$SERVICE_NAME" -n 30 --no-pager || true
+    if [ "$INIT_SYSTEM" = "systemd" ] && command -v journalctl >/dev/null 2>&1; then
+        journalctl -u "${SERVICE_NAME}.service" -n 30 --no-pager || true
+    elif [ -f /var/log/xboard-node.log ]; then
+        tail -n 30 /var/log/xboard-node.log || true
     fi
 }
 
 start_service() {
-    if systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
-        systemctl restart "$SERVICE_NAME"
-    else
-        systemctl start "$SERVICE_NAME"
-    fi
+    service_restart || service_start
     if ! wait_for_health; then
         log_error "Service failed health check"
         show_recent_logs
@@ -742,9 +835,13 @@ perform_upgrade() {
     install -m 755 "$TMP_DIR/xboard-node" "$BINARY_PATH"
     install -m 755 "$TMP_DIR/xbctl" "$CLI_PATH"
     ln -sf "$CLI_PATH" /usr/bin/xbctl 2>/dev/null || true
-    install -m 644 "$TMP_DIR/${SERVICE_NAME}" "$SERVICE_PATH"
-    systemctl daemon-reload
-    systemctl restart "$SERVICE_NAME"
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        install -m 644 "$TMP_DIR/service-file" "$SERVICE_PATH"
+        systemctl daemon-reload
+    else
+        install -m 755 "$TMP_DIR/service-file" "$SERVICE_PATH"
+    fi
+    service_restart
     if ! wait_for_health; then
         log_error "Upgrade health check failed"
         show_recent_logs
@@ -768,10 +865,12 @@ confirm_uninstall() {
 perform_uninstall() {
     confirm_uninstall
     if [ -f "$SERVICE_PATH" ]; then
-        systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
-        systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+        service_stop
+        service_disable
         rm -f "$SERVICE_PATH"
-        systemctl daemon-reload || true
+        if [ "$INIT_SYSTEM" = "systemd" ]; then
+            systemctl daemon-reload || true
+        fi
     fi
     rm -f "$BINARY_PATH"
     rm -f "$CLI_PATH"
@@ -807,7 +906,11 @@ perform_status() {
     fi
     if [ -f "$SERVICE_PATH" ]; then
         echo "  service: ${SERVICE_NAME}"
-        systemctl status "$SERVICE_NAME" --no-pager || true
+        if [ "$INIT_SYSTEM" = "systemd" ]; then
+            systemctl status "${SERVICE_NAME}.service" --no-pager || true
+        else
+            rc-service "$SERVICE_NAME" status || true
+        fi
     fi
 }
 
@@ -819,7 +922,7 @@ main() {
             exit 0
             ;;
         status)
-            ensure_systemd
+            detect_init_system
             perform_status
             exit 0
             ;;
@@ -828,7 +931,7 @@ main() {
     check_root
     detect_arch
     detect_os
-    ensure_systemd
+    detect_init_system
     install_dependencies
 
     case "$ACTION" in

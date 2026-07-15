@@ -41,6 +41,27 @@ func OutboundSupportMatrix() map[string]KernelOutboundSupport {
 				"proxy_tag",
 			},
 		},
+		"mihomo": {
+			Protocols: []string{
+				"vmess",
+				"vless",
+				"trojan",
+				"shadowsocks",
+				"socks",
+				"http",
+				"wireguard",
+				"tuic",
+				"hysteria2",
+				"anytls",
+				"mieru",
+			},
+			Features: []string{
+				"tag",
+				"protocol",
+				"settings",
+				"proxy_tag",
+			},
+		},
 	}
 }
 

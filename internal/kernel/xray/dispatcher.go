@@ -91,8 +91,8 @@ type ipCounter struct {
 // aliveIPs returns a snapshot of distinct IPs.
 func (ic *ipCounter) aliveIPs() map[string]bool {
 	result := make(map[string]bool)
-	ic.ips.Range(func(key, _ interface{}) bool {
-		if rv, ok := ic.ips.Load(key); ok && rv.(*atomic.Int64).Load() > 0 {
+	ic.ips.Range(func(key, value interface{}) bool {
+		if value.(*atomic.Int64).Load() > 0 {
 			result[key.(string)] = true
 		}
 		return true
@@ -368,6 +368,12 @@ func (d *LimitDispatcher) delConn(email, sourceIP string) {
 			if counter.Add(-1) <= 0 {
 				ic.ips.Delete(sourceIP)
 			}
+		}
+		// Clean up empty ipCounter to prevent sync.Map bloat.
+		empty := true
+		ic.ips.Range(func(_, _ interface{}) bool { empty = false; return false })
+		if empty {
+			d.unlimitedIPs.Delete(email)
 		}
 		return
 	}

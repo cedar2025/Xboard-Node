@@ -18,6 +18,25 @@ import (
 // M is a shorthand for building JSON-like maps
 type M = map[string]interface{}
 
+// privateIPv4Cidrs lists private/reserved IPv4 ranges blocked to prevent SSRF.
+var privateIPv4Cidrs = []string{
+	"10.0.0.0/8",
+	"100.64.0.0/10",
+	"127.0.0.0/8",
+	"169.254.0.0/16",
+	"172.16.0.0/12",
+	"192.0.0.0/24",
+	"192.168.0.0/16",
+	"198.18.0.0/15",
+}
+
+// privateIPv6Cidrs lists private/reserved IPv6 ranges blocked to prevent SSRF.
+var privateIPv6Cidrs = []string{
+	"fc00::/7",
+	"fe80::/10",
+	"::1/128",
+}
+
 func buildConfig(kcfg config.KernelConfig, nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLSCert) M {
 	var outbounds []M
 	tags := make(map[string]bool)
@@ -164,24 +183,11 @@ func buildRoutes(panelRoutes []model.RouteRule, customRules []model.CustomRouteR
 	rules = append(rules,
 		M{
 			"outbound": "block",
-			"ip_cidr": []string{
-				"10.0.0.0/8",
-				"100.64.0.0/10",
-				"127.0.0.0/8",
-				"169.254.0.0/16",
-				"172.16.0.0/12",
-				"192.0.0.0/24",
-				"192.168.0.0/16",
-				"198.18.0.0/15",
-			},
+			"ip_cidr":  privateIPv4Cidrs,
 		},
 		M{
 			"outbound": "block",
-			"ip_cidr": []string{
-				"fc00::/7",
-				"fe80::/10",
-				"::1/128",
-			},
+			"ip_cidr":  privateIPv6Cidrs,
 		},
 	)
 

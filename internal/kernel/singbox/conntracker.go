@@ -25,6 +25,39 @@ var ipPool = sync.Pool{
 	},
 }
 
+// boolMapPool caches map[string]bool for aliveIPList to reduce per-cycle allocations.
+var boolMapPool = sync.Pool{
+	New: func() interface{} {
+		return make(map[string]bool, 8)
+	},
+}
+
+// timerPool reuses time.Timer objects for rate-limit waits,
+// avoiding the runtime overhead of creating a new timer + channel per packet.
+var timerPool = sync.Pool{
+	New: func() interface{} {
+		return time.NewTimer(time.Hour) // placeholder; Reset before use
+	},
+}
+
+// waitTimer waits for the given delay or until ctx is cancelled.
+// Uses a pooled timer to reduce GC pressure on the hot path.
+// Returns true if the delay elapsed, false if ctx was cancelled.
+func waitTimer(ctx context.Context, delay time.Duration) bool {
+	t := timerPool.Get().(*time.Timer)
+	t.Reset(delay)
+	defer func() {
+		t.Stop()
+		timerPool.Put(t)
+	}()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // ─── Per-user statistics ────────────────────────────────────────────────────
 
 // userStats holds per-user traffic counters and alive IP tracking.
@@ -36,21 +69,21 @@ type userStats struct {
 
 	mu        sync.RWMutex   // RWMutex for concurrent reads
 	ips       map[string]int // sourceIP → refcount (number of active conns from that IP)
-	connCount int            // total active connections
+	connCount atomic.Int64   // total active connections (lock-free for GetUserTraffic)
 }
 
 // addConn registers a new connection from sourceIP.
 func (u *userStats) addConn(sourceIP string) {
+	u.connCount.Add(1)
 	u.mu.Lock()
-	u.connCount++
 	u.ips[sourceIP]++
 	u.mu.Unlock()
 }
 
 // removeConn unregisters a connection from sourceIP.
 func (u *userStats) removeConn(sourceIP string) {
+	u.connCount.Add(-1)
 	u.mu.Lock()
-	u.connCount--
 	u.ips[sourceIP]--
 	if u.ips[sourceIP] <= 0 {
 		delete(u.ips, sourceIP)
@@ -90,18 +123,31 @@ func releaseIPSnapshot(m map[string]struct{}) {
 	ipPool.Put(m)
 }
 
-// aliveIPList returns the set of alive IPs as a boolean map (for reporting).
+// aliveIPList returns the set of alive IPs as a pooled boolean map (for reporting).
+// Callers must not retain the map after passing it to the tracker.
 func (u *userStats) aliveIPList() map[string]bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if len(u.ips) == 0 {
 		return nil
 	}
-	result := make(map[string]bool, len(u.ips))
+	result := boolMapPool.Get().(map[string]bool)
 	for ip := range u.ips {
 		result[ip] = true
 	}
 	return result
+}
+
+// releaseBoolMap returns a map to the pool. Discards large maps to prevent bloat.
+func releaseBoolMap(m map[string]bool) {
+	if m == nil || len(m) > 64 {
+		return
+	}
+	// Clear entries before returning to pool.
+	for k := range m {
+		delete(m, k)
+	}
+	boolMapPool.Put(m)
 }
 
 // ─── ConnTracker ────────────────────────────────────────────────────────────
@@ -162,14 +208,21 @@ func (t *ConnTracker) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) {
 }
 
 // SetUserMap replaces the UUID→userID mapping and ensures per-user stats
-// structs exist for all users. Old users that are no longer present keep
-// their stats until their connections drain.
+// structs exist for all users. Stale entries with no active connections are pruned.
 func (t *ConnTracker) SetUserMap(m map[string]int) {
 	t.usersMu.Lock()
 	t.uuidMap = m
+	activeIDs := make(map[int]struct{}, len(m))
 	for _, uid := range m {
+		activeIDs[uid] = struct{}{}
 		if _, ok := t.users[uid]; !ok {
 			t.users[uid] = &userStats{ips: make(map[string]int)}
+		}
+	}
+	// Prune stale userStats with no active connections.
+	for uid, us := range t.users {
+		if _, ok := activeIDs[uid]; !ok && us.connCount.Load() == 0 {
+			delete(t.users, uid)
 		}
 	}
 	t.usersMu.Unlock()
@@ -341,7 +394,9 @@ func (t *ConnTracker) checkDeviceGate(us *userStats, userID int, sourceIP string
 		if localCount < limit {
 			return false
 		}
-		ipList := make([]string, 0, localCount+1)
+		// Use stack-allocated array for small device limits (typical: 3-5).
+		var ipBuf [16]string
+		ipList := ipBuf[:0]
 		for ip := range localIPs {
 			ipList = append(ipList, ip)
 		}
@@ -376,7 +431,8 @@ func (t *ConnTracker) checkDeviceGate(us *userStats, userID int, sourceIP string
 	}
 
 	// Over limit → lexicographic selection
-	ipList := make([]string, 0, len(allIPs)+1)
+	var ipBuf2 [16]string
+	ipList := ipBuf2[:0]
 	for ip := range allIPs {
 		ipList = append(ipList, ip)
 	}
@@ -432,9 +488,7 @@ func (t *ConnTracker) GetUserTraffic() (traffic map[int][2]int64, aliveIPs map[i
 			aliveIPs[uid] = ips
 		}
 
-		us.mu.Lock()
-		connCount += us.connCount
-		us.mu.Unlock()
+		connCount += int(us.connCount.Load())
 	}
 	t.usersMu.RUnlock()
 	return
@@ -462,17 +516,23 @@ func (t *ConnTracker) CloseByUUID(uuid string) int {
 	return 0
 }
 
+// ReleaseTrafficData returns pooled maps to the sync.Pool after the caller
+// (tracker.Process) is done consuming them. Implements kernel.TrafficDataReleaser.
+func (t *ConnTracker) ReleaseTrafficData(_ map[int][2]int64, aliveIPs map[int]map[string]bool) {
+	for _, ips := range aliveIPs {
+		releaseBoolMap(ips)
+	}
+}
+
 // ActiveCount returns the total number of active connections.
 func (t *ConnTracker) ActiveCount() int {
 	t.usersMu.RLock()
-	total := 0
+	total := int64(0)
 	for _, us := range t.users {
-		us.mu.Lock()
-		total += us.connCount
-		us.mu.Unlock()
+		total += us.connCount.Load()
 	}
 	t.usersMu.RUnlock()
-	return total
+	return int(total)
 }
 
 // removeConnRef removes the connection reference from connMap on close.
@@ -507,12 +567,7 @@ func (w *RateLimitedWriter) Write(b []byte) (int, error) {
 	// Slow path: wait for tokens with context cancellation support
 	resv := w.limiter.ReserveN(time.Now(), len(b))
 	if delay := resv.Delay(); delay > 0 {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-			// Tokens available, proceed
-		case <-w.ctx.Done():
+		if !waitTimer(w.ctx, delay) {
 			resv.Cancel()
 			return 0, w.ctx.Err()
 		}
@@ -542,12 +597,7 @@ func (r *RateLimitedReadCloser) Read(b []byte) (int, error) {
 			// Slow path: wait with context cancellation
 			resv := r.limiter.ReserveN(time.Now(), n)
 			if delay := resv.Delay(); delay > 0 {
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-					// Tokens available
-				case <-r.ctx.Done():
+				if !waitTimer(r.ctx, delay) {
 					resv.Cancel()
 					return n, r.ctx.Err()
 				}
@@ -585,12 +635,7 @@ func (c *trackedConn) Read(b []byte) (int, error) {
 			if !c.limiter.AllowN(time.Now(), n) {
 				resv := c.limiter.ReserveN(time.Now(), n)
 				if delay := resv.Delay(); delay > 0 {
-					timer := time.NewTimer(delay)
-					defer timer.Stop()
-					select {
-					case <-timer.C:
-						// Tokens available
-					case <-c.ctx.Done():
+					if !waitTimer(c.ctx, delay) {
 						resv.Cancel()
 						return n, c.ctx.Err()
 					}
@@ -611,12 +656,7 @@ func (c *trackedConn) Write(b []byte) (int, error) {
 		if !c.limiter.AllowN(time.Now(), len(b)) {
 			resv := c.limiter.ReserveN(time.Now(), len(b))
 			if delay := resv.Delay(); delay > 0 {
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-					// Tokens available
-				case <-c.ctx.Done():
+				if !waitTimer(c.ctx, delay) {
 					resv.Cancel()
 					return 0, c.ctx.Err()
 				}
@@ -653,12 +693,7 @@ func (c *trackedConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
 		if !c.limiter.AllowN(time.Now(), int(n)) {
 			resv := c.limiter.ReserveN(time.Now(), int(n))
 			if delay := resv.Delay(); delay > 0 {
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-					// Tokens available
-				case <-c.ctx.Done():
+				if !waitTimer(c.ctx, delay) {
 					resv.Cancel()
 				}
 			}
@@ -710,12 +745,7 @@ func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, err
 			if !c.limiter.AllowN(time.Now(), int(n)) {
 				resv := c.limiter.ReserveN(time.Now(), int(n))
 				if delay := resv.Delay(); delay > 0 {
-					timer := time.NewTimer(delay)
-					defer timer.Stop()
-					select {
-					case <-timer.C:
-						// Tokens available
-					case <-c.ctx.Done():
+					if !waitTimer(c.ctx, delay) {
 						resv.Cancel()
 						return dest, c.ctx.Err()
 					}
@@ -734,12 +764,7 @@ func (c *trackedPacketConn) WritePacket(buffer *buf.Buffer, dest singM.Socksaddr
 		if !c.limiter.AllowN(time.Now(), int(n)) {
 			resv := c.limiter.ReserveN(time.Now(), int(n))
 			if delay := resv.Delay(); delay > 0 {
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-					// Tokens available
-				case <-c.ctx.Done():
+				if !waitTimer(c.ctx, delay) {
 					resv.Cancel()
 					return c.ctx.Err()
 				}
@@ -774,12 +799,7 @@ func (c *trackedPacketConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
 		if !c.limiter.AllowN(time.Now(), int(n)) {
 			resv := c.limiter.ReserveN(time.Now(), int(n))
 			if delay := resv.Delay(); delay > 0 {
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-					// Tokens available
-				case <-c.ctx.Done():
+				if !waitTimer(c.ctx, delay) {
 					resv.Cancel()
 				}
 			}

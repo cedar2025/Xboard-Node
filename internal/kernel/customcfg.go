@@ -5,24 +5,48 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/cedar2025/xboard-node/internal/nlog"
 	"gopkg.in/yaml.v3"
 )
 
+// customConfigCache caches parsed custom config to avoid repeated file I/O + parsing.
+var customConfigCache struct {
+	sync.Mutex
+	path string
+	size int64
+	data map[string]any
+}
+
 // LoadCustomConfig reads a custom config file (JSON or YAML) and returns it
 // as a generic map. Returns nil if path is empty or file does not exist.
+// Results are cached: re-parsing only occurs when the file's size changes.
 func LoadCustomConfig(path string) (map[string]any, error) {
 	if path == "" {
 		return nil, nil
 	}
 
-	data, err := os.ReadFile(path)
+	// Check cache.
+	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			nlog.Core().Warn("custom config file not found, skipping", "path", path)
 			return nil, nil
 		}
+		return nil, fmt.Errorf("stat custom config %s: %w", path, err)
+	}
+
+	customConfigCache.Lock()
+	if path == customConfigCache.path && info.Size() == customConfigCache.size && customConfigCache.data != nil {
+		result := customConfigCache.data
+		customConfigCache.Unlock()
+		return result, nil
+	}
+	customConfigCache.Unlock()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return nil, fmt.Errorf("read custom config %s: %w", path, err)
 	}
 
@@ -42,6 +66,13 @@ func LoadCustomConfig(path string) (map[string]any, error) {
 			return nil, fmt.Errorf("parse custom config as YAML: %w", err)
 		}
 	}
+
+	// Update cache.
+	customConfigCache.Lock()
+	customConfigCache.path = path
+	customConfigCache.size = info.Size()
+	customConfigCache.data = result
+	customConfigCache.Unlock()
 
 	nlog.Core().Info("loaded custom config", "path", path, "keys", mapKeys(result))
 	return result, nil

@@ -30,7 +30,7 @@ func TestNodeSpecFromPanelValidated_AllowsTargetsFromCustomConfigOutbounds(t *te
 			Action: panel.RouteAction{Type: "route", Target: "wg-exit"},
 			Match:  panel.RouteMatch{DomainSuffixes: []string{"example.com"}},
 		}},
-	}, config.KernelConfig{Type: "singbox", CustomConfig: customConfigPath})
+	}, config.KernelConfig{CustomConfig: customConfigPath})
 	if err != nil {
 		t.Fatalf("expected custom_config outbound tags to be available, got %v", err)
 	}
@@ -52,7 +52,6 @@ func TestNodeSpecFromPanelValidated_RejectsDuplicateTagsAcrossSources(t *testing
 			Settings: map[string]any{"server": "2.2.2.2", "server_port": 1080},
 		}},
 	}, config.KernelConfig{
-		Type:         "singbox",
 		CustomConfig: customConfigPath,
 		CustomOutbound: []map[string]any{{
 			"tag":      "proxy",

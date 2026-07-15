@@ -34,7 +34,7 @@ type Config struct {
 	HealthPort int `yaml:"health_port"`
 	// Nodes enables multi-node mode. When set, Panel.NodeID is ignored and
 	// one service instance is started per entry. All entries share the same
-	// panel URL/token, kernel type, log settings and runtime tuning.
+	// panel URL/token, log settings and runtime tuning.
 	Nodes []NodeEntry `yaml:"nodes,omitempty"`
 
 	// Machine enables machine mode: a single process manages all nodes
@@ -118,7 +118,7 @@ type WSConfig struct {
 }
 
 type KernelConfig struct {
-	Type      string `yaml:"type"` // "singbox" or "xray"
+	Type      string `yaml:"-"` // resolved at runtime from protocol (xray or singbox)
 	ConfigDir string `yaml:"config_dir"`
 	LogLevel  string `yaml:"log_level"`
 
@@ -404,9 +404,6 @@ func (c *Config) applyEnvOverrides() {
 	if v := envFirst("nodeType", "NODE_TYPE"); v != "" {
 		c.Panel.NodeType = v
 	}
-	if v := envFirst("kernel", "KERNEL_TYPE"); v != "" {
-		c.Kernel.Type = v
-	}
 	if v := envFirst("certFile", "CERT_FILE"); v != "" {
 		c.Cert.CertFile = v
 	}
@@ -495,9 +492,6 @@ func (c *Config) inheritFrom(parent *Config) {
 		c.Runtime.GoMemLimit = parent.Runtime.GoMemLimit
 	}
 	// Kernel (NOT config_dir — each instance needs unique dir)
-	if c.Kernel.Type == "" {
-		c.Kernel.Type = parent.Kernel.Type
-	}
 	if c.Kernel.LogLevel == "" {
 		c.Kernel.LogLevel = parent.Kernel.LogLevel
 	}
@@ -554,9 +548,6 @@ func (c *Config) inheritFrom(parent *Config) {
 }
 
 func (c *Config) setDefaultsFrom(baseDir string) {
-	if c.Kernel.Type == "" {
-		c.Kernel.Type = "singbox"
-	}
 	if c.Kernel.ConfigDir == "" {
 		c.Kernel.ConfigDir = baseDir
 	}
@@ -718,11 +709,6 @@ func (c *Config) validate() error {
 				return fmt.Errorf("nodes[%d].node_id must be positive", i)
 			}
 		}
-	}
-	switch c.Kernel.Type {
-	case "singbox", "xray":
-	default:
-		return fmt.Errorf("kernel.type must be 'singbox' or 'xray', got '%s'", c.Kernel.Type)
 	}
 	if c.Cert.AutoTLS && c.Cert.Domain == "" {
 		return fmt.Errorf("cert.domain is required when cert.auto_tls is enabled")

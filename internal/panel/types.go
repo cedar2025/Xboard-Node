@@ -138,6 +138,15 @@ type NodeConfig struct {
 	Transport      string `json:"transport,omitempty"`
 	TrafficPattern string `json:"traffic_pattern,omitempty"`
 
+	// Sudoku
+	SudokuConfig *SudokuConfig `json:"sudoku_config,omitempty"`
+
+	// TrustTunnel
+	TrustTunnelNetwork              []string `json:"trusttunnel_network,omitempty"`
+	TrustTunnelCongestionController string   `json:"trusttunnel_congestion_controller,omitempty"`
+	TrustTunnelCWND                 int      `json:"trusttunnel_cwnd,omitempty"`
+	TrustTunnelBBRProfile           string   `json:"trusttunnel_bbr_profile,omitempty"`
+
 	// Multiplex
 	Multiplex *MultiplexConfig `json:"multiplex,omitempty"`
 
@@ -175,6 +184,21 @@ type BrutalConfig struct {
 	Enabled  bool `json:"enabled"`
 	UpMbps   int  `json:"up_mbps"`
 	DownMbps int  `json:"down_mbps"`
+}
+
+type SudokuConfig struct {
+	AEADMethod         string   `json:"aead_method,omitempty"`
+	PaddingMin         *int     `json:"padding_min,omitempty"`
+	PaddingMax         *int     `json:"padding_max,omitempty"`
+	TableType          string   `json:"table_type,omitempty"`
+	HandshakeTimeout   *int     `json:"handshake_timeout,omitempty"`
+	EnablePureDownlink *bool    `json:"enable_pure_downlink,omitempty"`
+	CustomTable        string   `json:"custom_table,omitempty"`
+	CustomTables       []string `json:"custom_tables,omitempty"`
+	DisableHTTPMask    bool     `json:"disable_http_mask,omitempty"`
+	HTTPMaskMode       string   `json:"http_mask_mode,omitempty"`
+	PathRoot           string   `json:"path_root,omitempty"`
+	Fallback           string   `json:"fallback,omitempty"`
 }
 
 // CertConfig holds certificate automation settings from the panel.

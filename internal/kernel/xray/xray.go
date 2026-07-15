@@ -314,7 +314,7 @@ func (x *Xray) AddUsers(users []model.UserSpec) (int, error) {
 		x.users = merged
 		x.mu.Unlock()
 		x.updateDispatcherLimits(merged)
-	x.updateBandwidthLimits(merged)
+		x.updateBandwidthLimits(merged)
 		return 0, nil
 	}
 
@@ -643,7 +643,7 @@ func (x *Xray) ensureGeoData(nc *model.NodeSpec) {
 // marshalConfig builds the xray JSON config and returns the raw bytes.
 func marshalConfig(cfg config.KernelConfig, nc *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) ([]byte, error) {
 	cfgMap := buildConfig(cfg, nc, users, tls)
-	data, err := json.MarshalIndent(cfgMap, "", "  ")
+	data, err := json.Marshal(cfgMap)
 	if err != nil {
 		return nil, fmt.Errorf("marshal config: %w", err)
 	}
@@ -721,10 +721,10 @@ func (x *Xray) aggregateStats() (map[int][2]int64, error) {
 		email := userEmail(u.ID)
 
 		var dUp, dDown int64
-		if c := mgr.GetCounter(fmt.Sprintf("user>>>%s>>>traffic>>>uplink", email)); c != nil {
+		if c := mgr.GetCounter("user>>>" + email + ">>>traffic>>>uplink"); c != nil {
 			dUp = c.Set(0)
 		}
-		if c := mgr.GetCounter(fmt.Sprintf("user>>>%s>>>traffic>>>downlink", email)); c != nil {
+		if c := mgr.GetCounter("user>>>" + email + ">>>traffic>>>downlink"); c != nil {
 			dDown = c.Set(0)
 		}
 

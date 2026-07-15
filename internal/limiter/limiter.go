@@ -16,6 +16,10 @@ type Limiter struct {
 	// kernel gate-keeping hot path (called per new connection).
 	uuidDeviceLimit map[string]int
 
+	// Fast-path: when no users have a device limit, GetDeviceLimitByUUID
+	// returns (0, false) immediately without any lock.
+	hasDeviceLimits atomic.Bool
+
 	deviceLimitEvents atomic.Uint64
 }
 
@@ -55,6 +59,7 @@ func (l *Limiter) UpdateUsers(users []model.UserSpec) []int {
 		}
 	}
 	l.uuidDeviceLimit = idx
+	l.hasDeviceLimits.Store(len(idx) > 0)
 
 	return removed
 }
@@ -77,6 +82,9 @@ func (l *Limiter) SnapshotMetrics() LimiterMetrics {
 // Returns (limit, true) if a device limit is set, (0, false) otherwise.
 // This is designed to be passed as a function reference to kernel.SetDeviceLimitFunc.
 func (l *Limiter) GetDeviceLimitByUUID(uuid string) (int, bool) {
+	if !l.hasDeviceLimits.Load() {
+		return 0, false
+	}
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	limit, ok := l.uuidDeviceLimit[uuid]

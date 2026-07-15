@@ -49,7 +49,7 @@ func NodeSpecFromPanel(nc *panel.NodeConfig) *NodeSpec {
 	for _, route := range nc.Routes {
 		routes = append(routes, RouteRule{
 			ID:          route.ID,
-			Match:       cloneStringSlice(route.Match),
+			Match:       route.Match,
 			Action:      route.Action,
 			ActionValue: route.ActionValue,
 		})
@@ -60,7 +60,7 @@ func NodeSpecFromPanel(nc *panel.NodeConfig) *NodeSpec {
 		outbounds = append(outbounds, OutboundConfig{
 			Tag:      outbound.Tag,
 			Protocol: outbound.Protocol,
-			Settings: cloneAnyMap(outbound.Settings),
+			Settings: outbound.Settings,
 			ProxyTag: outbound.ProxyTag,
 		})
 	}
@@ -71,13 +71,13 @@ func NodeSpecFromPanel(nc *panel.NodeConfig) *NodeSpec {
 			Name:     rule.Name,
 			Disabled: rule.Disabled,
 			Match: RouteMatch{
-				Domains:        cloneStringSlice(rule.Match.Domains),
-				DomainSuffixes: cloneStringSlice(rule.Match.DomainSuffixes),
-				IPCIDRs:        cloneStringSlice(rule.Match.IPCIDRs),
-				Ports:          cloneStringSlice(rule.Match.Ports),
-				Networks:       cloneStringSlice(rule.Match.Networks),
-				SourceCIDRs:    cloneStringSlice(rule.Match.SourceCIDRs),
-				SourcePorts:    cloneStringSlice(rule.Match.SourcePorts),
+				Domains:        rule.Match.Domains,
+				DomainSuffixes: rule.Match.DomainSuffixes,
+				IPCIDRs:        rule.Match.IPCIDRs,
+				Ports:          rule.Match.Ports,
+				Networks:       rule.Match.Networks,
+				SourceCIDRs:    rule.Match.SourceCIDRs,
+				SourcePorts:    rule.Match.SourcePorts,
 			},
 			Action: RouteAction{
 				Type:   rule.Action.Type,
@@ -91,12 +91,12 @@ func NodeSpecFromPanel(nc *panel.NodeConfig) *NodeSpec {
 		ListenIP:            nc.ListenIP,
 		ServerPort:          nc.ServerPort,
 		Network:             nc.Network,
-		NetworkSettings:     cloneAnyMap(nc.NetworkSettings),
+		NetworkSettings:     nc.NetworkSettings,
 		Routes:              routes,
 		KernelType:          nc.KernelType,
 		KernelLogLevel:      nc.KernelLogLevel,
 		CustomOutbounds:     outbounds,
-		CustomRoutes:        cloneMapSlice(nc.CustomRoutes),
+		CustomRoutes:        nc.CustomRoutes,
 		CustomRouteRules:    customRouteRules,
 		CertConfig:          certCfg,
 		AutoTLS:             nc.AutoTLS,
@@ -108,7 +108,7 @@ func NodeSpecFromPanel(nc *panel.NodeConfig) *NodeSpec {
 		TLS:                 nc.TLS,
 		Flow:                nc.Flow,
 		Decryption:          nc.Decryption,
-		TLSSettings:         cloneAnyMap(nc.TLSSettings),
+		TLSSettings:         nc.TLSSettings,
 		Host:                nc.Host,
 		ServerName:          nc.ServerName,
 		Version:             nc.Version,
@@ -120,6 +120,11 @@ func NodeSpecFromPanel(nc *panel.NodeConfig) *NodeSpec {
 		PaddingScheme:       string(nc.PaddingScheme),
 		Transport:           nc.Transport,
 		TrafficPattern:      nc.TrafficPattern,
+		SudokuConfig:        sudokuConfigFromPanel(nc.SudokuConfig),
+		TrustTunnelNetwork:              nc.TrustTunnelNetwork,
+		TrustTunnelCongestionController: nc.TrustTunnelCongestionController,
+		TrustTunnelCWND:                 nc.TrustTunnelCWND,
+		TrustTunnelBBRProfile:           nc.TrustTunnelBBRProfile,
 		Multiplex:           multiplex,
 		AcceptProxyProtocol: nc.AcceptProxyProtocol,
 	}
@@ -131,6 +136,26 @@ func NodeSpecFromPanelValidated(nc *panel.NodeConfig, kcfg config.KernelConfig) 
 		return nil, err
 	}
 	return spec, nil
+}
+
+func sudokuConfigFromPanel(sc *panel.SudokuConfig) *SudokuConfig {
+	if sc == nil {
+		return nil
+	}
+	return &SudokuConfig{
+		AEADMethod:         sc.AEADMethod,
+		PaddingMin:         sc.PaddingMin,
+		PaddingMax:         sc.PaddingMax,
+		TableType:          sc.TableType,
+		HandshakeTimeout:   sc.HandshakeTimeout,
+		EnablePureDownlink: sc.EnablePureDownlink,
+		CustomTable:        sc.CustomTable,
+		CustomTables:       cloneStringSlice(sc.CustomTables),
+		DisableHTTPMask:    sc.DisableHTTPMask,
+		HTTPMaskMode:       sc.HTTPMaskMode,
+		PathRoot:           sc.PathRoot,
+		Fallback:           sc.Fallback,
+	}
 }
 
 func UserSpecsFromPanel(users []panel.User) []UserSpec {
@@ -259,8 +284,33 @@ func (n *NodeSpec) ToPanel() *panel.NodeConfig {
 		PaddingScheme:       panel.StringOrArray(n.PaddingScheme),
 		Transport:           n.Transport,
 		TrafficPattern:      n.TrafficPattern,
+		SudokuConfig:        sudokuConfigToPanel(n.SudokuConfig),
+		TrustTunnelNetwork:              n.TrustTunnelNetwork,
+		TrustTunnelCongestionController: n.TrustTunnelCongestionController,
+		TrustTunnelCWND:                 n.TrustTunnelCWND,
+		TrustTunnelBBRProfile:           n.TrustTunnelBBRProfile,
 		Multiplex:           multiplex,
 		AcceptProxyProtocol: n.AcceptProxyProtocol,
+	}
+}
+
+func sudokuConfigToPanel(sc *SudokuConfig) *panel.SudokuConfig {
+	if sc == nil {
+		return nil
+	}
+	return &panel.SudokuConfig{
+		AEADMethod:         sc.AEADMethod,
+		PaddingMin:         sc.PaddingMin,
+		PaddingMax:         sc.PaddingMax,
+		TableType:          sc.TableType,
+		HandshakeTimeout:   sc.HandshakeTimeout,
+		EnablePureDownlink: sc.EnablePureDownlink,
+		CustomTable:        sc.CustomTable,
+		CustomTables:       cloneStringSlice(sc.CustomTables),
+		DisableHTTPMask:    sc.DisableHTTPMask,
+		HTTPMaskMode:       sc.HTTPMaskMode,
+		PathRoot:           sc.PathRoot,
+		Fallback:           sc.Fallback,
 	}
 }
 

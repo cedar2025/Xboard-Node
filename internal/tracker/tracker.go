@@ -55,6 +55,13 @@ type Tracker struct {
 
 	// lastAliveIPsHash detects changes to avoid duplicate reports.
 	lastAliveIPsHash string
+
+	// aliveIPsDirty is set by Process() when the alive IP count changes,
+	// allowing FlushAliveIPs to skip the expensive hash when nothing changed.
+	aliveIPsDirty atomic.Bool
+
+	// processCount tracks Process() calls for periodic cleanup.
+	processCount uint64
 }
 
 func New() *Tracker {
@@ -113,10 +120,31 @@ func (t *Tracker) Process(
 		}
 	}
 
-	// Compute online from alive IPs.
+	// Purge stale entries from lastSeen every 60th call (~10 min at 10s interval).
+	// Prevents unbounded growth when users are removed from the panel.
+	t.processCount++
+	if t.processCount%60 == 0 {
+		for uid := range t.lastSeen {
+			if _, ok := cumTraffic[uid]; !ok {
+				delete(t.lastSeen, uid)
+			}
+		}
+	}
+
+	// Compute online from alive IPs and detect changes for dirty flag.
+	prev := t.live.Load()
 	online := make(map[int]int, len(kernelAliveIPs))
+	changed := len(kernelAliveIPs) != len(prev.aliveIPs)
 	for uid, ips := range kernelAliveIPs {
 		online[uid] = len(ips)
+		if !changed {
+			if old, ok := prev.aliveIPs[uid]; !ok || len(old) != len(ips) {
+				changed = true
+			}
+		}
+	}
+	if changed {
+		t.aliveIPsDirty.Store(true)
 	}
 
 	// Publish new snapshot (readers will see this atomically).
@@ -162,6 +190,11 @@ func (t *Tracker) HasTraffic() bool {
 // FlushAliveIPs returns per-user alive IPs.
 // Reuses internal buffer. Returns nil if unchanged.
 func (t *Tracker) FlushAliveIPs() map[int][]string {
+	// Fast path: skip expensive hash if Process() didn't detect changes.
+	if !t.aliveIPsDirty.Load() {
+		return nil
+	}
+
 	s := t.live.Load()
 
 	t.mu.Lock()
@@ -172,10 +205,12 @@ func (t *Tracker) FlushAliveIPs() map[int][]string {
 
 	// If no changes, return nil to avoid duplicate reporting
 	if currentHash == t.lastAliveIPsHash {
+		t.aliveIPsDirty.Store(false)
 		return nil
 	}
 
 	t.lastAliveIPsHash = currentHash
+	t.aliveIPsDirty.Store(false)
 
 	// Clear old buffer entries.
 	for k := range t.aliveIPsBuf {
