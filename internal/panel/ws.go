@@ -163,9 +163,6 @@ func (w *WSClient) Run(ctx context.Context) {
 
 		if err != nil {
 			nlog.Core().Warn("ws disconnected", "error", err)
-			if !wasConnected {
-				w.notifyStatus(false)
-			}
 		}
 
 		select {
