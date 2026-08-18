@@ -138,7 +138,12 @@ func UserDiff(oldUsers, newUsers []model.UserSpec) (toAdd, toRemove []model.User
 		}
 	}
 	for _, u := range oldUsers {
-		if _, exists := newMap[u.ID]; !exists {
+		newUser, exists := newMap[u.ID]
+		// A rotated UUID must replace the existing Xray/sing-box account.  Both
+		// kernels key dynamic users by the stable panel user ID/email, so adding
+		// the new UUID without first removing the old account is rejected as a
+		// duplicate and leaves the expired identity active.
+		if !exists || u.UUID != newUser.UUID {
 			toRemove = append(toRemove, u)
 		}
 	}
