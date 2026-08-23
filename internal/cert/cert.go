@@ -202,10 +202,18 @@ func acmeFingerprint(cfg config.CertConfig) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// normalizeCertMode maps the panel UI's "self-signed" to canonical "self" (Xboard#1012).
+func normalizeCertMode(mode string) string {
+	if mode == "self-signed" {
+		return "self"
+	}
+	return mode
+}
+
 // resolveModeFor mirrors (*Manager).resolveMode() for an arbitrary cfg, used
 // by Reconfigure to decide tear-down without mutating manager state.
 func resolveModeFor(cfg config.CertConfig) string {
-	mode := strings.ToLower(strings.TrimSpace(cfg.CertMode))
+	mode := normalizeCertMode(strings.ToLower(strings.TrimSpace(cfg.CertMode)))
 	if mode != "" {
 		return mode
 	}
@@ -223,7 +231,7 @@ func resolveModeFor(cfg config.CertConfig) string {
 
 // resolveMode returns the effective cert mode, handling backward compat for auto_tls.
 func (m *Manager) resolveMode() string {
-	mode := strings.ToLower(strings.TrimSpace(m.cfg.CertMode))
+	mode := normalizeCertMode(strings.ToLower(strings.TrimSpace(m.cfg.CertMode)))
 	if mode != "" {
 		return mode
 	}
