@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cedar2025/xboard-node/internal/buildinfo"
 	"github.com/cedar2025/xboard-node/internal/config"
 	"github.com/cedar2025/xboard-node/internal/machine"
 	"github.com/cedar2025/xboard-node/internal/nlog"
@@ -21,8 +22,8 @@ import (
 )
 
 var (
-	version   = "dev"
-	buildTime = "unknown"
+	version   = buildinfo.Version
+	buildTime = buildinfo.BuildTime
 )
 
 func main() {
