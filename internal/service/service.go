@@ -109,6 +109,12 @@ func (b *apiBackoff) onSuccess() {
 	b.mu.Unlock()
 }
 
+func (b *apiBackoff) reset() {
+	b.mu.Lock()
+	b.skipRemaining = 0
+	b.mu.Unlock()
+}
+
 func (b *apiBackoff) onFailure() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -590,6 +596,13 @@ func (s *Service) handleWSEvent(ctx context.Context, event controlplane.Event) {
 	default:
 		nlog.Core().Debug(fmt.Sprintf("unknown ws event: %v", event.Type))
 	}
+}
+
+// ForceReload triggers an immediate pull bypassing the poll backoff —
+// invoked by the control.reload WS directive.
+func (s *Service) ForceReload() {
+	s.pullBackoff.reset()
+	go s.pullViaAPIAsync(context.Background())
 }
 
 // pullViaAPIAsync fetches config/users from the panel API in a background

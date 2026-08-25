@@ -22,6 +22,8 @@ const (
 	WSEventSyncDevices   = "sync.devices"   // panel → node: global device state
 	WSEventSyncNodes     = "sync.nodes"     // panel → machine: node list changed
 	WSEventReportDevices = "report.devices" // node → panel: report device snapshot
+	WSEventControlReload = "control.reload" // panel → node/machine: force re-pull config
+	WSEventControlRestart = "control.restart" // panel → node/machine: restart node / agent
 )
 
 // WSEvent is a parsed data event delivered to the service layer.
@@ -82,6 +84,10 @@ type syncDevicesPayload struct {
 // syncNodesPayload carries the updated node list for a machine.
 type syncNodesPayload struct {
 	Nodes []MachineNode `json:"nodes"`
+}
+
+type controlPayload struct {
+	NodeID int `json:"node_id"` // 0 = machine-wide
 }
 
 // WSClientConfig holds WebSocket client tuning options.
@@ -349,6 +355,9 @@ func (w *WSClient) handleMessage(msg wsMessage) {
 	case WSEventSyncNodes:
 		w.handleDataEvent(msg)
 
+	case WSEventControlReload, WSEventControlRestart:
+		w.handleDataEvent(msg)
+
 	default:
 		nlog.Core().Debug("ws unknown event", "event", msg.Event)
 	}
@@ -437,6 +446,14 @@ func (w *WSClient) handleDataEvent(msg wsMessage) {
 			return
 		}
 		event.Nodes = p.Nodes
+
+	case WSEventControlReload, WSEventControlRestart:
+		var p controlPayload
+		if err := decodeData(msg.Data, &p); err != nil {
+			nlog.Core().Warn("ws: cannot decode control payload", "error", err)
+			return
+		}
+		event.NodeID = p.NodeID
 	}
 
 	w.onEvent(event)

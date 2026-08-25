@@ -160,8 +160,13 @@ func runWithReload(initialRoot *config.RootConfig, configPath string) {
 				defer wg.Done()
 				if instanceCfg.IsMachineMode() {
 					nlog.Core().Info("starting machine instance", "instance", instanceCfg.InstanceID, "machine_id", instanceCfg.Machine.MachineID, "panel_url", instanceCfg.Panel.URL)
-					orch := machine.New(instanceCfg)
-					if err := orch.Run(ctx); err != nil {
+				orch := machine.New(instanceCfg)
+				orch.SetSelfRestart(func() {
+					cancel()
+					nlog.Core().Info("agent self-restarting via supervisor")
+					os.Exit(0)
+				})
+				if err := orch.Run(ctx); err != nil {
 						nlog.Core().Error("machine instance exited with error", "instance", instanceCfg.InstanceID, "error", err)
 						errCh <- err
 						cancel()

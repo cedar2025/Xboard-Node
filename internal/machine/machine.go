@@ -23,6 +23,7 @@ type nodeHandle struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	mailbox *controlplane.NodeMailbox
+	service *service.Service
 }
 
 // Orchestrator manages all nodes bound to a panel machine. It:
@@ -53,6 +54,11 @@ type Orchestrator struct {
 
 	pullInterval time.Duration
 	pushInterval time.Duration
+
+	// selfRestart, when set, terminates the agent process so the service
+	// manager (systemd Restart=always) re-launches it — used by
+	// control.restart without node_id.
+	selfRestart func()
 }
 
 // New creates a machine orchestrator from the given config.
@@ -167,6 +173,12 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	cp := controlplane.NewMachinePanelControlPlane(perNodeClient, nodeCfg.Kernel, push, registerFn)
 	svc := service.NewWithControlPlane(nodeCfg, cp)
 
+	o.mu.Lock()
+	if h, ok := o.nodes[mn.ID]; ok {
+		h.service = svc
+	}
+	o.mu.Unlock()
+
 	nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",
 		mn.ID, mn.Type, mn.Name))
 
@@ -178,6 +190,41 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 				"node_id", mn.ID, "error", err)
 		}
 	}()
+}
+
+func (o *Orchestrator) reloadNode(nodeID int) {
+	o.mu.Lock()
+	h, ok := o.nodes[nodeID]
+	o.mu.Unlock()
+	if !ok {
+		nlog.Core().Warn("control.reload: unknown node", "node_id", nodeID)
+		return
+	}
+	if h.service != nil {
+		h.service.ForceReload()
+	}
+}
+
+func (o *Orchestrator) restartNode(nodeID int) {
+	o.mu.Lock()
+	_, ok := o.nodes[nodeID]
+	o.mu.Unlock()
+	if !ok {
+		nlog.Core().Warn("control.restart: unknown node", "node_id", nodeID)
+		return
+	}
+	o.stopNode(nodeID)
+	// rediscovery re-fetches the node list and starts everything missing,
+	// which covers the stopped node.
+	go o.rediscover(o.runCtx)
+}
+
+// SetSelfRestart wires the agent-level restart hook (called by main after
+// orchestrator construction; nil = machine-level control.restart is a no-op).
+func (o *Orchestrator) SetSelfRestart(fn func()) {
+	o.mu.Lock()
+	o.selfRestart = fn
+	o.mu.Unlock()
 }
 
 func (o *Orchestrator) stopNode(nodeID int) {
@@ -312,6 +359,31 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 	if event.Type == panel.WSEventSyncNodes {
 		nlog.Core().Info("machine received sync.nodes, triggering immediate rediscovery")
 		go o.rediscover(o.runCtx)
+		return
+	}
+
+	// control.* events are machine-level directives from the panel
+	if event.Type == panel.WSEventControlReload {
+		if event.NodeID > 0 {
+			nlog.Core().Info("machine received control.reload", "node_id", event.NodeID)
+			go o.reloadNode(event.NodeID)
+		} else {
+			nlog.Core().Info("machine received control.reload (all nodes)")
+			go o.rediscover(o.runCtx)
+		}
+		return
+	}
+	if event.Type == panel.WSEventControlRestart {
+		if event.NodeID > 0 {
+			nlog.Core().Info("machine received control.restart", "node_id", event.NodeID)
+			go o.restartNode(event.NodeID)
+		} else if o.selfRestart != nil {
+			nlog.Core().Info("machine received control.restart (agent), exiting for supervisor restart")
+			go func() {
+				o.stopAll()
+				o.selfRestart()
+			}()
+		}
 		return
 	}
 
