@@ -140,6 +140,9 @@ func (m *Manager) Reconfigure(ctx context.Context, newCfg config.CertConfig) (bo
 	if newCfg.CertDir == "" {
 		newCfg.CertDir = m.cfg.CertDir
 	}
+	if newCfg.ACMEStorageDir == "" {
+		newCfg.ACMEStorageDir = m.cfg.ACMEStorageDir
+	}
 
 	// If ACME is running and the new config materially differs (or switches
 	// away from ACME), tear down the old certmagic instance first.
@@ -412,7 +415,11 @@ func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solve
 		return fmt.Errorf("create cert dir: %w", err)
 	}
 
-	storage := &certmagic.FileStorage{Path: m.cfg.CertDir}
+	storageDir := m.cfg.ACMEStorageDir
+	if storageDir == "" {
+		storageDir = m.cfg.CertDir
+	}
+	storage := &certmagic.FileStorage{Path: storageDir}
 
 	var magic *certmagic.Config
 	cache := certmagic.NewCache(certmagic.CacheOptions{

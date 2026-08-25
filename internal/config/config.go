@@ -151,6 +151,12 @@ type CertConfig struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
 	CertDir  string `yaml:"cert_dir"`
+
+	// ACMEStorageDir is the shared certmagic storage directory for ACME
+	// state. Machine mode derives it at the machine level so same-domain
+	// nodes across one machine issue and renew the certificate once.
+	// Empty = fall back to CertDir.
+	ACMEStorageDir string `yaml:"acme_storage_dir,omitempty"`
 	HTTPPort int    `yaml:"http_port"` // port for HTTP-01 challenge (default: 80)
 
 	// CertMode selects the TLS certificate strategy:
@@ -806,6 +812,10 @@ func (c *Config) ExpandMachineNode(nodeID int, nodeType string) *Config {
 		nodeCfg.Kernel.GeoDataDir = c.Kernel.GeoDataDir
 	}
 	nodeCfg.Cert.CertDir = filepath.Join(nodeCfg.Kernel.ConfigDir, "certs")
+
+	if nodeCfg.Cert.ACMEStorageDir == "" {
+		nodeCfg.Cert.ACMEStorageDir = filepath.Join(c.Kernel.ConfigDir, "acme-shared")
+	}
 
 	return &nodeCfg
 }
