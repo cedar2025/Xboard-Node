@@ -4,15 +4,73 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cedar2025/xboard-node/internal/cert"
 	"github.com/cedar2025/xboard-node/internal/config"
+	"github.com/cedar2025/xboard-node/internal/controlplane"
 	"github.com/cedar2025/xboard-node/internal/kernel"
 	"github.com/cedar2025/xboard-node/internal/limiter"
 	"github.com/cedar2025/xboard-node/internal/model"
 	"golang.org/x/time/rate"
 )
+
+type countingSource struct {
+	polls atomic.Int32
+}
+
+type connectedPushClient struct{}
+
+func (connectedPushClient) Run(ctx context.Context)           { <-ctx.Done() }
+func (connectedPushClient) IsConnected() bool                 { return true }
+func (connectedPushClient) SendDeviceReport(map[int][]string) {}
+
+type disconnectedPushClient struct{}
+
+func (disconnectedPushClient) Run(ctx context.Context)           { <-ctx.Done() }
+func (disconnectedPushClient) IsConnected() bool                 { return false }
+func (disconnectedPushClient) SendDeviceReport(map[int][]string) {}
+
+func (f *countingSource) Initial(
+	context.Context,
+	func() map[string]interface{},
+	chan<- controlplane.Event,
+	chan<- controlplane.StatusChange,
+) (controlplane.Bootstrap, error) {
+	return controlplane.Bootstrap{}, nil
+}
+
+func (f *countingSource) Poll(context.Context) (controlplane.Snapshot, error) {
+	f.polls.Add(1)
+	return controlplane.Snapshot{}, nil
+}
+
+func (f *countingSource) Discover(
+	context.Context,
+	func() map[string]interface{},
+	chan<- controlplane.Event,
+	chan<- controlplane.StatusChange,
+) (controlplane.PushClient, error) {
+	return nil, nil
+}
+
+func (f *countingSource) Metrics() controlplane.APIMetrics { return controlplane.APIMetrics{} }
+func (f *countingSource) SupportsPolling() bool            { return true }
+func (f *countingSource) SupportsDiscovery() bool          { return false }
+
+func waitForPolls(t *testing.T, source *countingSource, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if source.polls.Load() >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("poll count = %d, want at least %d", source.polls.Load(), want)
+}
 
 type fakeKernel struct {
 	running bool
@@ -107,6 +165,96 @@ func newTestService(k *fakeKernel) *Service {
 	k.SetSpeedLimitFunc(s.speedTracker.GetLimiter)
 	k.SetDeviceLimitFunc(s.limiter.GetDeviceLimitByUUID)
 	return s
+}
+
+func TestHandleWSStatusCoalescesReconnectReconciliation(t *testing.T) {
+	k := &fakeKernel{running: true}
+	source := &countingSource{}
+	s := newTestService(k)
+	s.source = source
+	s.pullResults = make(chan pullResult, 4)
+	s.wsReconnectDelay = func() time.Duration { return 0 }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s.handleWSStatus(ctx, controlplane.StatusChange{Connected: true})
+	time.Sleep(10 * time.Millisecond)
+	if got := source.polls.Load(); got != 0 {
+		t.Fatalf("initial WS connect caused %d REST polls, want 0", got)
+	}
+
+	s.handleWSStatus(ctx, controlplane.StatusChange{Connected: false})
+	time.Sleep(10 * time.Millisecond)
+	if got := source.polls.Load(); got != 0 {
+		t.Fatalf("WS disconnect caused %d REST polls, want 0", got)
+	}
+
+	// Repeated statuses collapse into one delayed reconciliation after the real
+	// reconnect.
+	s.handleWSStatus(ctx, controlplane.StatusChange{Connected: false})
+	s.handleWSStatus(ctx, controlplane.StatusChange{Connected: true})
+	s.handleWSStatus(ctx, controlplane.StatusChange{Connected: true})
+	waitForPolls(t, source, 1)
+	time.Sleep(10 * time.Millisecond)
+	if got := source.polls.Load(); got != 1 {
+		t.Fatalf("disconnect/reconnect caused %d REST polls, want exactly 1", got)
+	}
+}
+
+func TestWSReconnectReconcileIsCanceledByAnotherDisconnect(t *testing.T) {
+	k := &fakeKernel{running: true}
+	source := &countingSource{}
+	s := newTestService(k)
+	s.source = source
+	s.pullResults = make(chan pullResult, 4)
+	s.wsReconnectDelay = func() time.Duration { return 30 * time.Millisecond }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s.handleWSStatus(ctx, controlplane.StatusChange{Connected: true})
+	s.handleWSStatus(ctx, controlplane.StatusChange{Connected: false})
+	s.handleWSStatus(ctx, controlplane.StatusChange{Connected: true})
+	time.Sleep(5 * time.Millisecond)
+	s.handleWSStatus(ctx, controlplane.StatusChange{Connected: false})
+	time.Sleep(50 * time.Millisecond)
+
+	if got := source.polls.Load(); got != 0 {
+		t.Fatalf("stale reconnect timer caused %d REST polls after another disconnect, want 0", got)
+	}
+}
+
+func TestStartWSClientSeedsAlreadyConnectedMachinePushState(t *testing.T) {
+	s := newTestService(&fakeKernel{running: true})
+	s.wsClient = connectedPushClient{}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.startWSClient(ctx)
+	cancel()
+
+	if !s.wsStatusSeen.Load() || !s.wsConnected.Load() || !s.wsEverConnected.Load() {
+		t.Fatalf(
+			"already-connected push state not seeded: seen=%v connected=%v ever=%v",
+			s.wsStatusSeen.Load(),
+			s.wsConnected.Load(),
+			s.wsEverConnected.Load(),
+		)
+	}
+}
+
+func TestStartWSClientRecordsInitialDisconnectedTime(t *testing.T) {
+	s := newTestService(&fakeKernel{running: true})
+	s.wsClient = disconnectedPushClient{}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.startWSClient(ctx)
+	cancel()
+
+	s.metricsMu.RLock()
+	disconnectedAt := s.wsDisconnectAt
+	s.metricsMu.RUnlock()
+	if disconnectedAt.IsZero() {
+		t.Fatal("initially disconnected push client did not record wsDisconnectAt")
+	}
 }
 
 func TestApplyUserUpdatePreparesLimiterBeforeKernelUpdate(t *testing.T) {

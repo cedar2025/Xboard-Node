@@ -3,6 +3,7 @@ package panel
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -228,6 +229,52 @@ func TestWSClient_FallbackWhenNoServer(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if ws.IsConnected() {
 		t.Error("expected IsConnected() = false when no server")
+	}
+}
+
+func TestWSClient_RepeatedDialFailuresDoNotRepeatDisconnectedStatus(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	var mu sync.Mutex
+	statusChanges := make([]WSStatusChange, 0, 4)
+	ws := NewWSClient(
+		"ws://"+addr,
+		"storm-token",
+		1,
+		WSClientConfig{
+			HandshakeTimeout: 20 * time.Millisecond,
+			BackoffInitial:   10 * time.Millisecond,
+			BackoffMax:       20 * time.Millisecond,
+		},
+		func(WSEvent) {},
+		func(change WSStatusChange) {
+			mu.Lock()
+			statusChanges = append(statusChanges, change)
+			mu.Unlock()
+		},
+		func() map[string]interface{} { return nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		ws.Run(ctx)
+		close(done)
+	}()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(statusChanges) != 0 {
+		t.Fatalf("got %d disconnected callbacks for a client that never connected, want 0", len(statusChanges))
 	}
 }
 
