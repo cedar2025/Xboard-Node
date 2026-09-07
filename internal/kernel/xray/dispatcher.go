@@ -88,6 +88,19 @@ type ipCounter struct {
 	ips sync.Map // sourceIP → *atomic.Int64 (refcount)
 }
 
+// idle 判断是否没有任何活跃连接引用（用于流失用户条目的清扫回收）。
+func (ic *ipCounter) idle() bool {
+	idle := true
+	ic.ips.Range(func(_, v interface{}) bool {
+		if v.(*atomic.Int64).Load() > 0 {
+			idle = false
+			return false
+		}
+		return true
+	})
+	return idle
+}
+
 // aliveIPs returns a snapshot of distinct IPs.
 func (ic *ipCounter) aliveIPs() map[string]bool {
 	result := make(map[string]bool)
@@ -196,7 +209,29 @@ func (d *LimitDispatcher) UpdateLimits(emailToUID map[string]int, deviceLimits, 
 	d.mu.Lock()
 	d.emailToUID = emailToUID
 	d.deviceLimits = deviceLimits
+
+	// 清理已从面板移除且无活跃引用的邮箱条目，防止两个 IP 表随用户流失无限增长；
+	// 有活跃连接的条目在连接排空后的下一次 UpdateLimits 清扫回收
+	for email := range d.limitedIPs {
+		if _, ok := emailToUID[email]; ok {
+			continue
+		}
+		if ips := d.limitedIPs[email]; len(ips) == 0 {
+			delete(d.limitedIPs, email)
+		}
+	}
 	d.mu.Unlock()
+
+	d.unlimitedIPs.Range(func(key, value interface{}) bool {
+		email := key.(string)
+		if _, ok := emailToUID[email]; ok {
+			return true
+		}
+		if ic := value.(*ipCounter); ic != nil && ic.idle() {
+			d.unlimitedIPs.Delete(email)
+		}
+		return true
+	})
 
 }
 

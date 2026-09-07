@@ -17,6 +17,7 @@ import (
 	"github.com/cedar2025/xboard-node/internal/buildinfo"
 	"github.com/cedar2025/xboard-node/internal/config"
 	"github.com/cedar2025/xboard-node/internal/machine"
+	"github.com/cedar2025/xboard-node/internal/monitor"
 	"github.com/cedar2025/xboard-node/internal/nlog"
 	"github.com/cedar2025/xboard-node/internal/service"
 )
@@ -73,6 +74,10 @@ func runWithReload(initialRoot *config.RootConfig, configPath string) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`{"status":"ok"}`))
+		})
+		mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+			w.Write([]byte(monitor.RenderPrometheus()))
 		})
 		healthSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 		healthPort = port
@@ -160,13 +165,13 @@ func runWithReload(initialRoot *config.RootConfig, configPath string) {
 				defer wg.Done()
 				if instanceCfg.IsMachineMode() {
 					nlog.Core().Info("starting machine instance", "instance", instanceCfg.InstanceID, "machine_id", instanceCfg.Machine.MachineID, "panel_url", instanceCfg.Panel.URL)
-				orch := machine.New(instanceCfg)
-				orch.SetSelfRestart(func() {
-					cancel()
-					nlog.Core().Info("agent self-restarting via supervisor")
-					os.Exit(0)
-				})
-				if err := orch.Run(ctx); err != nil {
+					orch := machine.New(instanceCfg)
+					orch.SetSelfRestart(func() {
+						cancel()
+						nlog.Core().Info("agent self-restarting via supervisor")
+						os.Exit(0)
+					})
+					if err := orch.Run(ctx); err != nil {
 						nlog.Core().Error("machine instance exited with error", "instance", instanceCfg.InstanceID, "error", err)
 						errCh <- err
 						cancel()

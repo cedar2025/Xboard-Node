@@ -60,8 +60,8 @@ type Service struct {
 	pushBackoff    apiBackoff // backoff for panel push failures
 
 	// pushActive prevents overlapping push/pull goroutines.
-	pushActive atomic.Bool
-	pullActive     atomic.Bool
+	pushActive      atomic.Bool
+	pullActive      atomic.Bool
 	lastReconcileAt time.Time
 	// pullResults delivers async pullViaAPI results back to the main goroutine.
 	pullResults chan pullResult

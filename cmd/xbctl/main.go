@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,7 +56,7 @@ type fileRootConfig struct {
 	WS        *config.WSConfig   `yaml:"ws,omitempty"`
 	Runtime   *fileRuntimeConfig `yaml:"runtime,omitempty"`
 	Cert      *config.CertConfig `yaml:"cert,omitempty"`
-	Instances []fileInstance      `yaml:"instances,omitempty"`
+	Instances []fileInstance     `yaml:"instances,omitempty"`
 }
 
 type fileInstance struct {
@@ -387,9 +389,14 @@ func runUpgrade(args []string) error {
 	}
 
 	version := "latest"
+	pinnedSHA := ""
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--version" && i+1 < len(args) {
 			version = args[i+1]
+			i++
+		}
+		if args[i] == "--sha256" && i+1 < len(args) {
+			pinnedSHA = strings.ToLower(strings.TrimPrefix(args[i+1], "sha256:"))
 			i++
 		}
 	}
@@ -425,6 +432,18 @@ func runUpgrade(args []string) error {
 	}
 	if err := os.Chmod(newCLI, 0o755); err != nil {
 		return cleanupFiles(newBinary, newCLI, fmt.Errorf("chmod xbctl: %w", err))
+	}
+
+	// 供应链加固：计算二进制 SHA256；--sha256 提供时强制比对（校验和不匹配即中止），
+	// 未提供时打印指纹供人工核对（发布方尚无 checksums 文件，TLS+exec 校验之外的可选固定手段）
+	actualSHA, err := fileSHA256(newBinary)
+	if err != nil {
+		return cleanupFiles(newBinary, newCLI, fmt.Errorf("hash binary: %w", err))
+	}
+	fmt.Printf("binary sha256: %s\n", actualSHA)
+	if pinnedSHA != "" && actualSHA != pinnedSHA {
+		return cleanupFiles(newBinary, newCLI, fmt.Errorf(
+			"sha256 mismatch: got %s, want %s — 下载产物与固定校验和不符，已中止升级", actualSHA, pinnedSHA))
 	}
 
 	// Validate downloaded binaries
@@ -616,6 +635,19 @@ func downloadFile(url, dest string) error {
 	defer f.Close()
 	_, err = io.Copy(f, resp.Body)
 	return err
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func cleanupFiles(a, b string, err error) error {

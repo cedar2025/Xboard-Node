@@ -37,6 +37,7 @@ type userStats struct {
 	mu        sync.RWMutex   // RWMutex for concurrent reads
 	ips       map[string]int // sourceIP → refcount (number of active conns from that IP)
 	connCount int            // total active connections
+	stale     bool           // 用户已从面板移除；连接排空后由周期清扫回收
 }
 
 // addConn registers a new connection from sourceIP.
@@ -167,10 +168,29 @@ func (t *ConnTracker) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) {
 func (t *ConnTracker) SetUserMap(m map[string]int) {
 	t.usersMu.Lock()
 	t.uuidMap = m
+	active := make(map[int]struct{}, len(m))
 	for _, uid := range m {
+		active[uid] = struct{}{}
 		if _, ok := t.users[uid]; !ok {
 			t.users[uid] = &userStats{ips: make(map[string]int)}
 		}
+	}
+	// 已移除用户：无活跃连接立即回收，有残留连接的标记 stale 交给周期清扫，
+	// 避免 users map 随用户流失无限增长（此前旧用户条目永不删除）
+	for uid, us := range t.users {
+		if _, ok := active[uid]; ok {
+			us.mu.Lock()
+			us.stale = false
+			us.mu.Unlock()
+			continue
+		}
+		us.mu.Lock()
+		if len(us.ips) == 0 {
+			delete(t.users, uid)
+		} else {
+			us.stale = true
+		}
+		us.mu.Unlock()
 	}
 	t.usersMu.Unlock()
 }
@@ -417,6 +437,17 @@ func formatInt36(n int64) string {
 // GetUserTraffic returns per-user cumulative traffic and alive IPs.
 // This is O(users), not O(connections).
 func (t *ConnTracker) GetUserTraffic() (traffic map[int][2]int64, aliveIPs map[int]map[string]bool, connCount int) {
+	t.usersMu.Lock()
+	for uid, us := range t.users {
+		us.mu.Lock()
+		if us.stale && len(us.ips) == 0 {
+			delete(t.users, uid)
+			us.mu.Unlock()
+			continue
+		}
+		us.mu.Unlock()
+	}
+	t.usersMu.Unlock()
 	t.usersMu.RLock()
 	traffic = make(map[int][2]int64, len(t.users))
 	aliveIPs = make(map[int]map[string]bool, len(t.users))

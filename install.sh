@@ -605,6 +605,16 @@ Restart=always
 RestartSec=5
 LimitNOFILE=1048576
 NoNewPrivileges=true
+
+# 能力收紧：仅保留网络绑定/网络管理/原始套接字（TUN、SO_MARK、低端口与 ip rule 所需），
+# 移除 SYS_ADMIN/DAC_OVERRIDE 等其余 root 能力；配合文件系统沙箱限制写入面
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=${INSTALL_ROOT}
+
 StandardOutput=journal
 StandardError=journal
 
