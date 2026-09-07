@@ -61,9 +61,14 @@ type Service struct {
 
 	// pushActive prevents overlapping push/pull goroutines.
 	pushActive atomic.Bool
-	pullActive atomic.Bool
+	pullActive     atomic.Bool
+	lastReconcileAt time.Time
 	// pullResults delivers async pullViaAPI results back to the main goroutine.
 	pullResults chan pullResult
+	// certResults delivers async cert Reconfigure outcomes back to the main
+	// goroutine (ObtainCertSync can block minutes on DNS-01 propagation).
+	certResults  chan certReconfOutcome
+	certInFlight atomic.Bool
 
 	wsClient         controlplane.PushClient        // Push client (nil if push is not enabled)
 	wsEvents         chan controlplane.Event        // receives data events from push transport
@@ -171,6 +176,7 @@ func newService(cfg *config.Config, cp controlplane.ControlPlane) *Service {
 		wsEvents:     make(chan controlplane.Event, 16),
 		wsStatusCh:   make(chan controlplane.StatusChange, 4),
 		pullResults:  make(chan pullResult, 1),
+		certResults:  make(chan certReconfOutcome, 4),
 	}
 }
 
@@ -224,9 +230,17 @@ func (s *Service) Run(ctx context.Context) error {
 			s.reportDevices()
 
 		case <-pullTicker.C:
-			// When WebSocket is connected, skip REST polling entirely.
-			// Config/user updates arrive via WS push.
+			// When WebSocket is connected, skip REST polling — but force a full
+			// reconciliation pull every 10 minutes to recover from missed/dropped
+			// WS events (channel-full drops, silent panel restarts) that would
+			// otherwise leave the node stale indefinitely while "connected".
 			if s.wsClient != nil && s.wsClient.IsConnected() {
+				if time.Since(s.lastReconcileAt) < 10*time.Minute || s.pullActive.Load() {
+					continue
+				}
+				nlog.Core().Debug("periodic reconciliation pull (ws connected)")
+				s.lastReconcileAt = time.Now()
+				s.pullViaAPIAsync(ctx)
 				continue
 			}
 			nlog.Core().Debug("polling from API (ws not connected)")
@@ -234,6 +248,23 @@ func (s *Service) Run(ctx context.Context) error {
 
 		case result := <-s.pullResults:
 			s.applyPullResult(ctx, result)
+
+		case out := <-s.certResults:
+			if out.err != nil {
+				nlog.Core().Error("failed to apply runtime cert config", "mode", out.cfg.CertMode, "error", out.err)
+				continue
+			}
+			s.cfg.Cert = out.cfg
+			if out.changed {
+				msg := fmt.Sprintf("cert: material updated, has_cert=%v", s.cert.HasCert())
+				if s.nodeLog != nil {
+					s.nodeLog.Info(msg)
+				} else {
+					nlog.Core().Info(msg)
+				}
+				// 证书材料变更需要重建内核才能生效（与配置变更同路径）
+				s.applyChanges(ctx, true, false)
+			}
 
 		case <-wsDiscoveryTicker.C:
 			s.wsDiscovery(ctx)
@@ -363,21 +394,29 @@ func (s *Service) applyNodeCert(ctx context.Context, newCfg *config.CertConfig) 
 	cfgCopy := *newCfg
 	cfgCopy.CertDir = s.cfg.Cert.CertDir
 
-	changed, err := s.cert.Reconfigure(ctx, cfgCopy)
-	if err != nil {
-		nlog.Core().Error("failed to apply runtime cert config", "mode", cfgCopy.CertMode, "error", err)
+	// Reconfigure 可能同步执行 ACME ObtainCertSync（DNS-01 传播等待可达数分钟），
+	// 在主事件循环上执行会冻结整个控制面（无上报/无 WS 处理）。改为后台执行，
+	// 结果经 certResults 回到主循环后再应用配置并触发内核重建。
+	if !s.certInFlight.CompareAndSwap(false, true) {
+		nlog.Core().Warn("cert: reconfigure already in progress, skipping")
 		return false
 	}
-	s.cfg.Cert = cfgCopy
-	if changed {
-		msg := fmt.Sprintf("cert: material updated, has_cert=%v", s.cert.HasCert())
-		if s.nodeLog != nil {
-			s.nodeLog.Info(msg)
-		} else {
-			nlog.Core().Info(msg)
+	nlog.Go("cert.reconfigure", func() {
+		changed, err := s.cert.Reconfigure(ctx, cfgCopy)
+		s.certInFlight.Store(false)
+		select {
+		case s.certResults <- certReconfOutcome{cfg: cfgCopy, changed: changed, err: err}:
+		case <-ctx.Done():
 		}
-	}
-	return changed
+	})
+	return false
+}
+
+// certReconfOutcome carries the result of an async cert Reconfigure.
+type certReconfOutcome struct {
+	cfg     config.CertConfig
+	changed bool
+	err     error
 }
 
 // startWSClient starts the push client goroutine if a client is configured.
@@ -387,7 +426,7 @@ func (s *Service) startWSClient(ctx context.Context) {
 	}
 	wsCtx, wsCancel := context.WithCancel(ctx)
 	s.wsCancel = wsCancel
-	go s.wsClient.Run(wsCtx)
+	nlog.Go("ws.run", func() { s.wsClient.Run(wsCtx) })
 }
 
 func (s *Service) markMailboxReadyAndDrain(ctx context.Context) {
@@ -624,7 +663,7 @@ func (s *Service) pullViaAPIAsync(ctx context.Context) {
 	currentConfigHash := s.lastConfigHash
 	certChanged := s.cert.CertRenewed()
 
-	go func() {
+	nlog.Go("service.pullAsync", func() {
 		defer s.pullActive.Store(false)
 		snapshot, err := s.source.Poll(ctx)
 		if err != nil {
@@ -651,7 +690,7 @@ func (s *Service) pullViaAPIAsync(ctx context.Context) {
 		case s.pullResults <- result:
 		case <-ctx.Done():
 		}
-	}()
+	})
 }
 
 // applyPullResult processes the result of an async pullViaAPI on the main goroutine.
@@ -995,7 +1034,7 @@ func (s *Service) pushReportAsync() {
 	metrics := s.buildMetrics(status)
 	metrics["kernel_status"] = s.kernel.IsRunning()
 
-	go func() {
+	nlog.Go("service.pushReport", func() {
 		defer s.pushActive.Store(false)
 		if err := s.sink.Report(controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}); err != nil {
 			nlog.Core().Warn("failed to push report", "error", err)
@@ -1010,7 +1049,7 @@ func (s *Service) pushReportAsync() {
 		}
 		s.pushBackoff.onSuccess()
 		nlog.ReportPushed(len(traffic), len(online))
-	}()
+	})
 }
 
 // pushReportSync is used only during shutdown to ensure final data is sent.

@@ -182,14 +182,14 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",
 		mn.ID, mn.Type, mn.Name))
 
-	go func() {
+	nlog.Go("machine.nodeRun", func() {
 		defer close(done)
 		defer o.unregisterNode(mn.ID)
 		if err := svc.Run(nodeCtx); err != nil {
 			nlog.Core().Error("machine node exited with error",
 				"node_id", mn.ID, "error", err)
 		}
-	}()
+	})
 }
 
 func (o *Orchestrator) reloadNode(nodeID int) {
@@ -216,7 +216,7 @@ func (o *Orchestrator) restartNode(nodeID int) {
 	o.stopNode(nodeID)
 	// rediscovery re-fetches the node list and starts everything missing,
 	// which covers the stopped node.
-	go o.rediscover(o.runCtx)
+	nlog.Go("machine.rediscover", func() { o.rediscover(o.runCtx) })
 }
 
 // SetSelfRestart wires the agent-level restart hook (called by main after
@@ -347,7 +347,7 @@ func (o *Orchestrator) tryStartWS(ctx context.Context) {
 
 	wsCtx, wsCancel := context.WithCancel(ctx)
 	o.wsCancel = wsCancel
-	go o.ws.Run(wsCtx)
+	nlog.Go("machine.wsRun", func() { o.ws.Run(wsCtx) })
 
 	nlog.Core().Info("machine: ws mux started")
 }
@@ -358,7 +358,7 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 	// sync.nodes is a machine-level event, not per-node
 	if event.Type == panel.WSEventSyncNodes {
 		nlog.Core().Info("machine received sync.nodes, triggering immediate rediscovery")
-		go o.rediscover(o.runCtx)
+		nlog.Go("machine.rediscover", func() { o.rediscover(o.runCtx) })
 		return
 	}
 
@@ -366,23 +366,23 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 	if event.Type == panel.WSEventControlReload {
 		if event.NodeID > 0 {
 			nlog.Core().Info("machine received control.reload", "node_id", event.NodeID)
-			go o.reloadNode(event.NodeID)
+			nlog.Go("machine.reloadNode", func() { o.reloadNode(event.NodeID) })
 		} else {
 			nlog.Core().Info("machine received control.reload (all nodes)")
-			go o.rediscover(o.runCtx)
+			nlog.Go("machine.rediscover", func() { o.rediscover(o.runCtx) })
 		}
 		return
 	}
 	if event.Type == panel.WSEventControlRestart {
 		if event.NodeID > 0 {
 			nlog.Core().Info("machine received control.restart", "node_id", event.NodeID)
-			go o.restartNode(event.NodeID)
+			nlog.Go("machine.restartNode", func() { o.restartNode(event.NodeID) })
 		} else if o.selfRestart != nil {
 			nlog.Core().Info("machine received control.restart (agent), exiting for supervisor restart")
-			go func() {
+			nlog.Go("machine.selfRestart", func() {
 				o.stopAll()
 				o.selfRestart()
-			}()
+			})
 		}
 		return
 	}

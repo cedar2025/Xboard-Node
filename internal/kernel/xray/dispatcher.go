@@ -294,6 +294,10 @@ func (d *LimitDispatcher) checkDeviceLimit(email, sourceIP string, isTCP bool) b
 		d.mu.RUnlock()
 		if isTCP {
 			d.mu.Lock()
+			// ResetConns 可能在此窗口重建了 limitedIPs——重取并补 nil 防护，避免 nil-map 写 panic
+			if d.limitedIPs[email] == nil {
+				d.limitedIPs[email] = make(map[string]int)
+			}
 			d.limitedIPs[email][sourceIP]++
 			d.mu.Unlock()
 		}

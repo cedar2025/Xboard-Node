@@ -216,7 +216,13 @@ func (w *WSClient) connect(ctx context.Context) error {
 	}
 	u.RawQuery = q.Encode()
 
-	nlog.Core().Debug("ws connecting", "url", u.String())
+	redacted := *u
+	rq := redacted.Query()
+	if rq.Get("token") != "" {
+		rq.Set("token", "****")
+		redacted.RawQuery = rq.Encode()
+	}
+	nlog.Core().Debug("ws connecting", "url", redacted.String())
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: w.cfg.HandshakeTimeout,
@@ -269,8 +275,12 @@ func (w *WSClient) connect(ctx context.Context) error {
 
 	errCh := make(chan error, 1)
 	done := make(chan struct{})
-	go func() {
+	nlog.Go("ws.readPump", func() {
 		defer close(done)
+		// 面板每 55s 发一次应用层 ping；3 分钟无任何消息视为连接已死（半开检测），
+		// 触发 ReadJSON 超时错误走正常重连路径，替代此前依赖 TCP 重传超时的 15-30 分钟盲区
+		const readIdleTimeout = 3 * time.Minute
+		_ = conn.SetReadDeadline(time.Now().Add(readIdleTimeout))
 		for {
 			var msg wsMessage
 			if err := conn.ReadJSON(&msg); err != nil {
@@ -280,6 +290,7 @@ func (w *WSClient) connect(ctx context.Context) error {
 				}
 				return
 			}
+			_ = conn.SetReadDeadline(time.Now().Add(readIdleTimeout))
 			nlog.Core().Debug("ws recv", "event", msg.Event, "data", string(msg.Data))
 			w.handleMessage(msg)
 			if msg.Event == "ping" {
@@ -290,7 +301,7 @@ func (w *WSClient) connect(ctx context.Context) error {
 				}
 			}
 		}
-	}()
+	})
 
 	for {
 		select {
@@ -402,8 +413,10 @@ func (w *WSClient) handleDataEvent(msg wsMessage) {
 			nlog.Core().Warn("ws: cannot decode users payload", "error", err)
 			return
 		}
-		if len(p.Users) == 0 {
-			nlog.Core().Warn("ws: users payload empty")
+		// 区分「字段缺失」（nil，视为坏载荷）与「合法空列表」（面板清空了全部用户）：
+		// 后者必须生效，否则 WS 常连期间清空用户的操作永远无法传播到节点
+		if p.Users == nil {
+			nlog.Core().Warn("ws: users payload missing users field")
 			return
 		}
 		event.Users = p.Users

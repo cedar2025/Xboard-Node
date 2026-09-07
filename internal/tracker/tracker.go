@@ -248,6 +248,9 @@ func (t *Tracker) CurrentOnline() map[int]int {
 func (t *Tracker) RestoreAliveIPs(data map[int][]string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// 上报失败回滚：清空上次哈希，保证下一轮 FlushAliveIPs 重新发送，
+	// 否则哈希门会判定「快照未变化」而永久跳过重发（恢复的数据被吞掉）
+	t.lastAliveIPsHash = ""
 	for uid, ipList := range data {
 		ips := t.aliveIPsBuf[uid]
 		if ips == nil {
