@@ -89,6 +89,61 @@ func (s *SingBox) Protocols() []string {
 	}
 }
 
+// Validate parses the generated configuration with the same option registry
+// Start uses. Inbound types that are missing from this build (for example a
+// QUIC protocol compiled without with_quic) and malformed options fail here,
+// before any listener is touched.
+func (s *SingBox) Validate(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
+	if nodeConfig == nil {
+		return fmt.Errorf("node config is nil")
+	}
+	cfgMap := buildConfig(s.cfg, nodeConfig, users, tls)
+	inbounds, _ := cfgMap["inbounds"].([]M)
+	if len(inbounds) == 0 {
+		return fmt.Errorf("protocol %q has no sing-box inbound builder", nodeConfig.Protocol)
+	}
+	data, err := json.Marshal(cfgMap)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = include.Context(ctx)
+	opts, err := singJSON.UnmarshalExtendedContext[option.Options](ctx, data)
+	if err != nil {
+		return fmt.Errorf("parse sing-box options: %w", err)
+	}
+	for _, inb := range opts.Inbounds {
+		if err := validateInboundTLS(inb); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateInboundTLS mirrors the TLS precondition of the QUIC-based inbounds
+// (sing-box reports it only from NewInbound, which Start would hit after the
+// previous instance was already torn down).
+func validateInboundTLS(inb option.Inbound) error {
+	var tlsOpts *option.InboundTLSOptions
+	switch v := inb.Options.(type) {
+	case *option.Hysteria2InboundOptions:
+		tlsOpts = v.TLS
+	case *option.HysteriaInboundOptions:
+		tlsOpts = v.TLS
+	case *option.TUICInboundOptions:
+		tlsOpts = v.TLS
+	case *option.AnyTLSInboundOptions:
+		tlsOpts = v.TLS
+	default:
+		return nil
+	}
+	if tlsOpts == nil || !tlsOpts.Enabled {
+		return fmt.Errorf("inbound %s requires TLS certificate material", inb.Type)
+	}
+	return nil
+}
+
 func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -192,6 +247,14 @@ func recycleOldBox(oldBox *box.Box, oldCancel context.CancelFunc, oldCtx context
 // Reload hot-swaps the inbound users and routing rules without restarting the box.
 // Routes, outbounds, and the connTracker stay alive so in-flight connections
 // continue to be tracked correctly.
+//
+// A structural change (protocol, port, transport, TLS) rebuilds the inbound
+// in place: the previous inbound is closed first so the port is free, then
+// the new one is created. Inbounds whose tag is not part of the new
+// configuration (the old protocol after a protocol switch) are removed, so a
+// switch never leaves the previous listener behind. If the new inbound cannot
+// be created, the previous inbound is restored with the latest user set so the
+// node keeps serving while the caller retries.
 func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -210,6 +273,11 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 	if err != nil {
 		return fmt.Errorf("parse options: %w", err)
 	}
+	for _, inb := range opts.Inbounds {
+		if err := validateInboundTLS(inb); err != nil {
+			return err
+		}
+	}
 
 	im := service.FromContext[adapter.InboundManager](s.ctx)
 	if im == nil {
@@ -219,6 +287,17 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 	router := service.FromContext[adapter.Router](s.ctx)
 	if router == nil {
 		return fmt.Errorf("router not available")
+	}
+
+	// The previous configuration, rebuilt only when a rollback is needed.
+	var previousInbounds []option.Inbound
+	if s.nodeConfig != nil {
+		prevMap := buildConfig(s.cfg, s.nodeConfig, users, s.tls)
+		if prevData, err := json.Marshal(prevMap); err == nil {
+			if prevOpts, err := singJSON.UnmarshalExtendedContext[option.Options](s.ctx, prevData); err == nil {
+				previousInbounds = prevOpts.Inbounds
+			}
+		}
 	}
 
 	// Update routing rules
@@ -234,10 +313,47 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 	tlsChanged := !bytes.Equal(s.tls.CertPEM, tls.CertPEM) || !bytes.Equal(s.tls.KeyPEM, tls.KeyPEM)
 	configChanged := tlsChanged || s.nodeConfig == nil || kernel.ComputeHash(nodeConfig, users) != kernel.ComputeHash(s.nodeConfig, s.users)
 
+	// Inbounds that are not part of the target must go before the target is
+	// bound: after a protocol switch the old tag ("vless-in") would otherwise
+	// keep its listener while the new tag ("hysteria-in") is created.
+	wanted := make(map[string]bool, len(opts.Inbounds))
+	for _, inb := range opts.Inbounds {
+		wanted[inb.Tag] = true
+	}
+	var removedStale []option.Inbound
+	for _, existing := range im.Inbounds() {
+		if wanted[existing.Tag()] {
+			continue
+		}
+		nlog.Core().Info("sing-box: removing inbound no longer in target", "tag", existing.Tag(), "type", existing.Type())
+		if err := im.Remove(existing.Tag()); err != nil {
+			return fmt.Errorf("remove stale inbound %s: %w", existing.Tag(), err)
+		}
+		for _, prev := range previousInbounds {
+			if prev.Tag == existing.Tag() {
+				removedStale = append(removedStale, prev)
+			}
+		}
+	}
+
+	restorePrevious := func(cause error) error {
+		// Put the previous inbounds back with the latest user set; the node
+		// belongs to the same authorised binding, only the target failed.
+		for _, prev := range removedStale {
+			logger := nopFactory.NewLogger(fmt.Sprintf("inbound/%s[%s]", prev.Type, prev.Tag))
+			if err := im.Create(s.ctx, router, logger, prev.Tag, prev.Type, prev.Options); err != nil {
+				nlog.Core().Error("sing-box: rollback of previous inbound failed", "tag", prev.Tag, "error", err)
+				return fmt.Errorf("%w (rollback of %s failed: %v)", cause, prev.Tag, err)
+			}
+			nlog.Core().Warn("sing-box: restored previous inbound after failed switch", "tag", prev.Tag, "type", prev.Type)
+		}
+		return cause
+	}
+
 	for _, inb := range opts.Inbounds {
 		tag := inb.Tag
 		if !configChanged {
-			if existing, ok := im.Get(tag); ok && existing.Type() == inb.Type {
+			if existing, ok := im.Get(tag); ok && existing.Type() == inb.Type && inb.Type != "hysteria2" {
 				var err error
 				switch v := existing.(type) {
 				case adapter.UpdatableInbound[option.VMessUser]:
@@ -250,10 +366,6 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 					}
 				case adapter.UpdatableInbound[option.TrojanUser]:
 					if opts, ok := inb.Options.(*option.TrojanInboundOptions); ok {
-						err = v.UpdateUsers(opts.Users)
-					}
-				case adapter.UpdatableInbound[option.Hysteria2User]:
-					if opts, ok := inb.Options.(*option.Hysteria2InboundOptions); ok {
 						err = v.UpdateUsers(opts.Users)
 					}
 				case adapter.UpdatableShadowsocksInbound:
@@ -294,10 +406,23 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 		// im.Create() cannot atomically swap a TCP listener — it tries to start the
 		// new socket before the old one is closed, causing "address already in use".
 		// The brief listen gap (< 1 ms) is far less disruptive than a full restart.
-		_ = im.Remove(tag) // ignore error when tag doesn't exist yet
+		var replaced *option.Inbound
+		if _, exists := im.Get(tag); exists {
+			for i := range previousInbounds {
+				if previousInbounds[i].Tag == tag {
+					replaced = &previousInbounds[i]
+				}
+			}
+			if err := im.Remove(tag); err != nil {
+				return restorePrevious(fmt.Errorf("remove inbound %s: %w", tag, err))
+			}
+		}
 		logger := nopFactory.NewLogger(fmt.Sprintf("inbound/%s[%s]", inb.Type, tag))
 		if err := im.Create(s.ctx, router, logger, tag, inb.Type, inb.Options); err != nil {
-			return fmt.Errorf("recreate inbound %s: %w", tag, err)
+			if replaced != nil {
+				removedStale = append(removedStale, *replaced)
+			}
+			return restorePrevious(fmt.Errorf("recreate inbound %s: %w", tag, err))
 		}
 	}
 
@@ -426,7 +551,7 @@ func (s *SingBox) ClearGlobalDevices() {
 
 // ─── User management (non-disruptive) ───────────────────────────────────────
 
-// AddUsers hot-swaps users into running inbounds. Zero connection disruption.
+// AddUsers updates running inbounds; Hysteria2 uses safe listener replacement.
 func (s *SingBox) AddUsers(users []model.UserSpec) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -457,8 +582,8 @@ func (s *SingBox) AddUsers(users []model.UserSpec) (int, error) {
 	return len(toAdd), nil
 }
 
-// RemoveUsers hot-swaps users out of running inbounds. Zero connection disruption
-// for remaining users.
+// RemoveUsers updates authorization; Hysteria2 replaces its listener to avoid
+// racing the dependency authentication table.
 func (s *SingBox) RemoveUsers(users []model.UserSpec) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -519,7 +644,11 @@ func (s *SingBox) UpdateUsers(users []model.UserSpec) (added, removed int, err e
 	return
 }
 
-// reloadInboundsLocked hot-swaps inbound users using UpdatableInbound.
+// reloadInboundsLocked updates inbound users. Hysteria2 is recreated because
+// sing-quic v0.6.0 mutates authentication maps without synchronizing readers;
+// calling its UpdateUsers races concurrent QUIC authentication. Replacement
+// closes existing QUIC sessions, a deliberate safety tradeoff until the
+// dependency offers a concurrency-safe user snapshot API.
 // Must be called with s.mu held.
 func (s *SingBox) reloadInboundsLocked(users []model.UserSpec) error {
 	cfgMap := buildConfig(s.cfg, s.nodeConfig, users, s.tls)
@@ -547,7 +676,7 @@ func (s *SingBox) reloadInboundsLocked(users []model.UserSpec) error {
 
 	for _, inb := range opts.Inbounds {
 		tag := inb.Tag
-		if existing, ok := im.Get(tag); ok && existing.Type() == inb.Type {
+		if existing, ok := im.Get(tag); ok && existing.Type() == inb.Type && inb.Type != "hysteria2" {
 			var err error
 			switch v := existing.(type) {
 			case adapter.UpdatableInbound[option.VMessUser]:
@@ -560,10 +689,6 @@ func (s *SingBox) reloadInboundsLocked(users []model.UserSpec) error {
 				}
 			case adapter.UpdatableInbound[option.TrojanUser]:
 				if opts, ok := inb.Options.(*option.TrojanInboundOptions); ok {
-					err = v.UpdateUsers(opts.Users)
-				}
-			case adapter.UpdatableInbound[option.Hysteria2User]:
-				if opts, ok := inb.Options.(*option.Hysteria2InboundOptions); ok {
 					err = v.UpdateUsers(opts.Users)
 				}
 			case adapter.UpdatableShadowsocksInbound:

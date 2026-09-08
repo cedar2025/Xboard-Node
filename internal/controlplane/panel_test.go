@@ -75,8 +75,10 @@ func newPanelTestServer(configBody string) *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
-func TestTranslateWSEventRejectsUnsupportedProtocolForKernel(t *testing.T) {
-	_, err := TranslateWSEvent(panelapi.WSEvent{
+// A push that needs the other kernel must reach the service: translation is
+// kernel independent and only rejects what no kernel in this build can run.
+func TestTranslateWSEventKeepsConfigAnotherKernelCanRun(t *testing.T) {
+	translated, err := TranslateWSEvent(panelapi.WSEvent{
 		Type: panelapi.WSEventSyncConfig,
 		Config: &panelapi.NodeConfig{
 			Protocol:   "shadowsocks",
@@ -86,10 +88,34 @@ func TestTranslateWSEventRejectsUnsupportedProtocolForKernel(t *testing.T) {
 			},
 		},
 	}, config.KernelConfig{Type: "xray"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+		t.Fatalf("TranslateWSEvent: %v", err)
 	}
-	if !strings.Contains(err.Error(), `translate node config: validate custom outbounds: custom_outbounds[0].protocol "hysteria2" is not supported by kernel "xray"`) {
+	if translated.Config == nil || len(translated.Config.CustomOutbounds) != 1 {
+		t.Fatalf("config not translated: %#v", translated.Config)
+	}
+
+	translated, err = TranslateWSEvent(panelapi.WSEvent{
+		Type:   panelapi.WSEventSyncConfig,
+		Config: &panelapi.NodeConfig{Protocol: "vless", Network: "xhttp", ServerPort: 443},
+	}, config.KernelConfig{Type: "singbox"})
+	if err != nil || translated.Config == nil || translated.Config.Network != "xhttp" {
+		t.Fatalf("xhttp push must not be rejected by the previous kernel: %v %#v", err, translated.Config)
+	}
+}
+
+func TestTranslateWSEventRejectsOutboundProtocolNoKernelSupports(t *testing.T) {
+	_, err := TranslateWSEvent(panelapi.WSEvent{
+		Type: panelapi.WSEventSyncConfig,
+		Config: &panelapi.NodeConfig{
+			Protocol:   "shadowsocks",
+			ServerPort: 8388,
+			CustomOutbounds: []panelapi.OutboundConfig{
+				{Tag: "x", Protocol: "carrier-pigeon", Settings: map[string]any{"server": "2.2.2.2", "server_port": 8443}},
+			},
+		},
+	}, config.KernelConfig{Type: "xray"})
+	if err == nil || !strings.Contains(err.Error(), `is not supported by any kernel`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

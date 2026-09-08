@@ -140,65 +140,7 @@ func (m *NodeMailbox) DrainIfReady() MailboxState {
 	return state
 }
 
-func cloneNodeSpec(spec *model.NodeSpec) *model.NodeSpec {
-	if spec == nil {
-		return nil
-	}
-	clone := *spec
-	if spec.NetworkSettings != nil {
-		clone.NetworkSettings = make(map[string]interface{}, len(spec.NetworkSettings))
-		for k, v := range spec.NetworkSettings {
-			clone.NetworkSettings[k] = v
-		}
-	}
-	if spec.TLSSettings != nil {
-		clone.TLSSettings = make(map[string]interface{}, len(spec.TLSSettings))
-		for k, v := range spec.TLSSettings {
-			clone.TLSSettings[k] = v
-		}
-	}
-	if spec.Routes != nil {
-		clone.Routes = append([]model.RouteRule(nil), spec.Routes...)
-	}
-	if spec.CustomOutbounds != nil {
-		clone.CustomOutbounds = append([]model.OutboundConfig(nil), spec.CustomOutbounds...)
-	}
-	if spec.CustomRoutes != nil {
-		clone.CustomRoutes = make([]map[string]any, len(spec.CustomRoutes))
-		for i, route := range spec.CustomRoutes {
-			if route == nil {
-				continue
-			}
-			copied := make(map[string]any, len(route))
-			for k, v := range route {
-				copied[k] = v
-			}
-			clone.CustomRoutes[i] = copied
-		}
-	}
-	if spec.CustomRouteRules != nil {
-		clone.CustomRouteRules = append([]model.CustomRouteRule(nil), spec.CustomRouteRules...)
-	}
-	if spec.CertConfig != nil {
-		certCopy := *spec.CertConfig
-		if spec.CertConfig.DNSEnv != nil {
-			certCopy.DNSEnv = make(map[string]string, len(spec.CertConfig.DNSEnv))
-			for k, v := range spec.CertConfig.DNSEnv {
-				certCopy.DNSEnv[k] = v
-			}
-		}
-		clone.CertConfig = &certCopy
-	}
-	if spec.Multiplex != nil {
-		muxCopy := *spec.Multiplex
-		if spec.Multiplex.Brutal != nil {
-			brutalCopy := *spec.Multiplex.Brutal
-			muxCopy.Brutal = &brutalCopy
-		}
-		clone.Multiplex = &muxCopy
-	}
-	return &clone
-}
+func cloneNodeSpec(spec *model.NodeSpec) *model.NodeSpec { return model.CloneNodeSpec(spec) }
 
 func cloneUsers(users []model.UserSpec) []model.UserSpec {
 	if users == nil {

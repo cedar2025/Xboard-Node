@@ -51,6 +51,12 @@ type Kernel interface {
 	Capabilities() Capabilities
 
 	// ─── Lifecycle ──────────────────────────────────────────────────────
+	// Validate builds the complete runtime configuration for the target and
+	// parses it the way Start would, without binding a listener or touching a
+	// running instance. It is the last check before a target is applied and
+	// must reject anything Start would reject (unknown inbound type, missing
+	// TLS material, malformed transport settings, build-tag gaps).
+	Validate(nodeConfig *model.NodeSpec, users []model.UserSpec, tls TLSCert) error
 	// Start initialises the kernel with the given node config and initial
 	// user set, binds listeners, and begins accepting connections.
 	// Calling Start on an already-running kernel stops the old instance first.
@@ -138,7 +144,7 @@ func UserDiff(oldUsers, newUsers []model.UserSpec) (toAdd, toRemove []model.User
 		}
 	}
 	for _, u := range oldUsers {
-		if _, exists := newMap[u.ID]; !exists {
+		if next, exists := newMap[u.ID]; !exists || next.UUID != u.UUID {
 			toRemove = append(toRemove, u)
 		}
 	}

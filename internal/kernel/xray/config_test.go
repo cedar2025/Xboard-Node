@@ -572,3 +572,31 @@ func TestExtractECHServerKeys(t *testing.T) {
 		})
 	}
 }
+
+// Config generation works on the caller's snapshot: forcing TLS for a Trojan
+// inbound must not rewrite the desired state that the service compares hashes
+// against.
+func TestBuildInbound_Trojan_DoesNotMutateSpec(t *testing.T) {
+	spec := testNodeSpec(&panel.NodeConfig{Protocol: "trojan", ServerPort: 443, ServerName: "t.example.test"})
+	inbound := buildInbound(spec, testUsers, kernel.TLSCert{CertPEM: []byte("CERT"), KeyPEM: []byte("KEY")})
+	ss := inbound["streamSettings"].(M)
+	if ss["security"] != "tls" {
+		t.Fatalf("trojan with a certificate must enable tls, got %v", ss["security"])
+	}
+	if spec.TLS != 0 {
+		t.Fatalf("builder mutated spec.TLS to %d", spec.TLS)
+	}
+}
+
+func TestBuildInbound_HTTP_PlainKeepsProxyProtocol(t *testing.T) {
+	spec := testNodeSpec(&panel.NodeConfig{Protocol: "http", ServerPort: 8080, AcceptProxyProtocol: true})
+	inbound := buildInbound(spec, testUsers, kernel.TLSCert{})
+	ss := inbound["streamSettings"].(M)
+	if _, hasTLS := ss["security"]; hasTLS {
+		t.Fatal("plain http must not enable tls")
+	}
+	sockopt, _ := ss["sockopt"].(M)
+	if sockopt == nil || sockopt["acceptProxyProtocol"] != true {
+		t.Fatalf("proxy protocol dropped for plain http: %v", ss)
+	}
+}

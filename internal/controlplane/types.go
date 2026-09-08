@@ -72,6 +72,9 @@ type Source interface {
 	Metrics() APIMetrics
 	SupportsPolling() bool
 	SupportsDiscovery() bool
+	// ResetCache drops conditional-request state (ETags) so the next Poll
+	// returns a full snapshot instead of "not modified".
+	ResetCache()
 }
 
 type Sink interface {
