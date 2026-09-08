@@ -125,9 +125,14 @@ func NodeSpecFromPanel(nc *panel.NodeConfig) *NodeSpec {
 	}
 }
 
+// NodeSpecFromPanelValidated converts a panel snapshot and checks its shape.
+// The kernel-specific part of validation is deliberately not done here: the
+// kernel that will run the target is chosen per target by the service (see
+// SelectKernel), so a snapshot that needs a different kernel than the previous
+// one must reach the apply pipeline instead of being rejected on arrival.
 func NodeSpecFromPanelValidated(nc *panel.NodeConfig, kcfg config.KernelConfig) (*NodeSpec, error) {
 	spec := NodeSpecFromPanel(nc)
-	if err := ValidateNodeSpec(spec, kcfg); err != nil {
+	if err := ValidateNodeSpecShape(spec, kcfg); err != nil {
 		return nil, err
 	}
 	return spec, nil

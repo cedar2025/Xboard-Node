@@ -17,6 +17,7 @@ func (l *LocalControlPlane) SupportsPolling() bool               { return false 
 func (l *LocalControlPlane) SupportsDiscovery() bool             { return false }
 func (l *LocalControlPlane) SupportsReporting() bool             { return false }
 func (l *LocalControlPlane) SupportsDeviceReports() bool         { return false }
+func (l *LocalControlPlane) ResetCache()                         {}
 
 func (l *LocalControlPlane) Initial(ctx context.Context, _ func() map[string]interface{}, _ chan<- Event, _ chan<- StatusChange) (Bootstrap, error) {
 	select {

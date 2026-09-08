@@ -57,7 +57,9 @@ xbctl service restart
 
 ## Configuration
 
-Legacy single-panel config is fully compatible. Appending bindings auto-migrates to `instances` format. See `config.yml.example`.
+See [Protocol switching and failure recovery](docs/protocol-switching.md) for certificate defaults, compatibility, recovery semantics and regression tests.
+
+Legacy single-panel configuration files are supported. Appending bindings auto-migrates to `instances` format. See `config.yml.example` and the compatibility notes linked above.
 
 ## Extensions
 

@@ -296,10 +296,13 @@ func buildTrojan(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.T
 	// Trojan requires TLS or Reality to be enabled.
 	// If the panel didn't explicitly set TLS=1 or TLS=2, but we have certs,
 	// we should enable a default TLS config to ensure the inbound can start.
+	// The forced mode is applied to a copy: the caller's snapshot is the
+	// desired state and must not be rewritten by config generation.
 	ss, _ := base["streamSettings"].(M)
 	if security, ok := ss["security"].(string); !ok || (security != "tls" && security != "reality") {
-		nc.TLS = 1 // Force internal state to trigger TLS build in applyStreamSettings
-		applyStreamSettings(base, nc, tc)
+		forced := *nc
+		forced.TLS = 1
+		applyStreamSettings(base, &forced, tc)
 	}
 
 	return base
@@ -394,9 +397,9 @@ func buildHTTP(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLS
 		"accounts": accounts,
 	}
 
-	if nc.TLS == 1 {
-		applyStreamSettings(base, nc, tc)
-	}
+	// Stream settings carry both the optional TLS layer (tls=1) and the
+	// proxy-protocol sockopt, so they are applied for plain http as well.
+	applyStreamSettings(base, nc, tc)
 	return base
 }
 

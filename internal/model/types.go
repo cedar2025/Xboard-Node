@@ -131,3 +131,74 @@ func cloneStringSlice(src []string) []string {
 	copy(out, src)
 	return out
 }
+
+// CloneNodeSpec returns a deep copy of spec. Config generation and state
+// bookkeeping work on copies so that a builder can never rewrite the desired
+// or the applied snapshot.
+func CloneNodeSpec(spec *NodeSpec) *NodeSpec {
+	if spec == nil {
+		return nil
+	}
+	clone := *spec
+	clone.NetworkSettings = cloneAnyMap(spec.NetworkSettings)
+	clone.TLSSettings = cloneAnyMap(spec.TLSSettings)
+	if spec.Routes != nil {
+		clone.Routes = make([]RouteRule, len(spec.Routes))
+		for i, route := range spec.Routes {
+			clone.Routes[i] = route
+			clone.Routes[i].Match = cloneStringSlice(route.Match)
+		}
+	}
+	if spec.CustomOutbounds != nil {
+		clone.CustomOutbounds = make([]OutboundConfig, len(spec.CustomOutbounds))
+		for i, outbound := range spec.CustomOutbounds {
+			clone.CustomOutbounds[i] = outbound
+			clone.CustomOutbounds[i].Settings = cloneAnyMap(outbound.Settings)
+		}
+	}
+	clone.CustomRoutes = cloneMapSlice(spec.CustomRoutes)
+	if spec.CustomRouteRules != nil {
+		clone.CustomRouteRules = make([]CustomRouteRule, len(spec.CustomRouteRules))
+		for i, rule := range spec.CustomRouteRules {
+			clone.CustomRouteRules[i] = rule
+			clone.CustomRouteRules[i].Match = RouteMatch{
+				Domains:        cloneStringSlice(rule.Match.Domains),
+				DomainSuffixes: cloneStringSlice(rule.Match.DomainSuffixes),
+				IPCIDRs:        cloneStringSlice(rule.Match.IPCIDRs),
+				Ports:          cloneStringSlice(rule.Match.Ports),
+				Networks:       cloneStringSlice(rule.Match.Networks),
+				SourceCIDRs:    cloneStringSlice(rule.Match.SourceCIDRs),
+				SourcePorts:    cloneStringSlice(rule.Match.SourcePorts),
+			}
+		}
+	}
+	if spec.CertConfig != nil {
+		certCopy := *spec.CertConfig
+		if spec.CertConfig.DNSEnv != nil {
+			certCopy.DNSEnv = make(map[string]string, len(spec.CertConfig.DNSEnv))
+			for k, v := range spec.CertConfig.DNSEnv {
+				certCopy.DNSEnv[k] = v
+			}
+		}
+		clone.CertConfig = &certCopy
+	}
+	if spec.Multiplex != nil {
+		muxCopy := *spec.Multiplex
+		if spec.Multiplex.Brutal != nil {
+			brutalCopy := *spec.Multiplex.Brutal
+			muxCopy.Brutal = &brutalCopy
+		}
+		clone.Multiplex = &muxCopy
+	}
+	return &clone
+}
+
+// CloneUserSpecs returns a copy of users (nil stays nil).
+func CloneUserSpecs(users []UserSpec) []UserSpec {
+	if users == nil {
+		return nil
+	}
+	out := make([]UserSpec, len(users))
+	copy(out, users)
+	return out
+}

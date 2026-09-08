@@ -36,8 +36,10 @@ type Client struct {
 	machineID  int
 	httpClient *http.Client
 
-	configETag string
-	userETag   string
+	cacheMu         sync.Mutex
+	cacheGeneration uint64
+	configETag      string
+	userETag        string
 
 	apiSuccess atomic.Uint64
 	apiFailure atomic.Uint64
@@ -79,7 +81,33 @@ func (c *Client) ForNode(nodeID int) *Client {
 // returns a full response instead of 304. Used by machine mode after a
 // pre-fetch to probe the transport type.
 func (c *Client) ResetConfigETag() {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	c.cacheGeneration++
 	c.configETag = ""
+}
+
+func (c *Client) cachedETag(nodeConfig bool) (string, uint64) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	if nodeConfig {
+		return c.configETag, c.cacheGeneration
+	}
+	return c.userETag, c.cacheGeneration
+}
+
+func (c *Client) rememberETag(nodeConfig bool, etag string, generation uint64) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	// A response already in flight cannot undo a forced full resync.
+	if generation != c.cacheGeneration {
+		return
+	}
+	if nodeConfig {
+		c.configETag = etag
+	} else {
+		c.userETag = etag
+	}
 }
 
 // Handshake calls the new v2 API to get WS config + initial data in one shot.
@@ -217,7 +245,8 @@ func (c *Client) userPath() string {
 
 // GetConfig fetches node configuration. Returns nil if not modified (304).
 func (c *Client) GetConfig() (*NodeConfig, error) {
-	resp, err := c.doRequest("GET", c.configPath(), nil, c.configETag)
+	etag, generation := c.cachedETag(true)
+	resp, err := c.doRequest("GET", c.configPath(), nil, etag)
 	if err != nil {
 		return nil, fmt.Errorf("get config: %w", err)
 	}
@@ -248,14 +277,15 @@ func (c *Client) GetConfig() (*NodeConfig, error) {
 	}
 
 	if etag := resp.Header.Get("ETag"); etag != "" {
-		c.configETag = etag
+		c.rememberETag(true, etag, generation)
 	}
 	return &cfg, nil
 }
 
 // GetUsers fetches available users. Returns nil if not modified (304).
 func (c *Client) GetUsers() ([]User, error) {
-	resp, err := c.doRequest("GET", c.userPath(), nil, c.userETag)
+	etag, generation := c.cachedETag(false)
+	resp, err := c.doRequest("GET", c.userPath(), nil, etag)
 	if err != nil {
 		return nil, fmt.Errorf("get users: %w", err)
 	}
@@ -275,7 +305,7 @@ func (c *Client) GetUsers() ([]User, error) {
 	}
 
 	if etag := resp.Header.Get("ETag"); etag != "" {
-		c.userETag = etag
+		c.rememberETag(false, etag, generation)
 	}
 	return usersResp.Users, nil
 }
@@ -317,6 +347,9 @@ func (c *Client) PushStatus(cpu float64, mem, swap, disk [2]uint64) error {
 
 // ResetETags clears cached ETags, forcing full responses
 func (c *Client) ResetETags() {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	c.cacheGeneration++
 	c.configETag = ""
 	c.userETag = ""
 }
