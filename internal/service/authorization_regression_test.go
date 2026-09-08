@@ -36,7 +36,7 @@ func TestRequestedTLSRejectsPlaintextVLESS(t *testing.T) {
 			if explicitNone {
 				spec.CertConfig = &config.CertConfig{CertMode: "none"}
 			}
-			s.setDesiredConfig(spec, computeConfigHash(spec))
+			s.setDesiredConfig(spec)
 			s.setDesiredUsers([]model.UserSpec{{ID: 1, UUID: testUUID}})
 			s.reconcile(context.Background())
 			if !s.appliedState.Running {
@@ -82,7 +82,7 @@ func TestRevocationDuringFailedProtocolSwitch(t *testing.T) {
 			port := freePort(t)
 			spec := realHysteria2Spec(port)
 			users := []model.UserSpec{{ID: 1, UUID: testUUID}, {ID: 2, UUID: testOtherUUID}}
-			s.setDesiredConfig(spec, computeConfigHash(spec))
+			s.setDesiredConfig(spec)
 			s.setDesiredUsers(users)
 			s.reconcile(context.Background())
 			applied(t, s, "hysteria")
@@ -125,7 +125,7 @@ func TestStaleRESTUsersCannotRestoreRevokedCredential(t *testing.T) {
 	port := freePort(t)
 	spec := realHysteria2Spec(port)
 	oldUsers := []model.UserSpec{{ID: 1, UUID: testUUID}, {ID: 2, UUID: testOtherUUID}}
-	s.setDesiredConfig(spec, computeConfigHash(spec))
+	s.setDesiredConfig(spec)
 	s.setDesiredUsers(oldUsers)
 	s.reconcile(context.Background())
 	applied(t, s, "hysteria")

@@ -296,6 +296,11 @@ func applied(t *testing.T, s *Service, protocol string) {
 	if !s.appliedState.Running || s.appliedState.Config == nil || s.appliedState.Config.Protocol != protocol || s.appliedState.ConfigHash != s.lastConfigHash {
 		t.Fatalf("target %s not applied: applied=%+v stage=%s err=%v", protocol, s.appliedState, s.lastApplyStage, s.lastApplyErr)
 	}
+	// The kernel builders received the applied snapshot; none of them may
+	// have rewritten it behind the recorded hash.
+	if got := computeConfigHash(s.appliedState.Config); got != s.appliedState.ConfigHash {
+		t.Fatalf("applied snapshot hashes to %s but the applied hash is %s", got, s.appliedState.ConfigHash)
+	}
 }
 
 func assertHysteria2Works(t *testing.T, s *Service, port int, targetHostPort string) {
@@ -359,7 +364,7 @@ func TestRealHysteria2StartsWithAutomaticCertificate(t *testing.T) {
 	port := freePort(t)
 
 	spec := realHysteria2Spec(port)
-	s.setDesiredConfig(spec, computeConfigHash(spec))
+	s.setDesiredConfig(spec)
 	s.setDesiredUsers([]model.UserSpec{{ID: 1, UUID: testUUID}})
 	s.reconcile(context.Background())
 	applied(t, s, "hysteria")
@@ -403,7 +408,7 @@ func TestRealRealityAndHysteria2SwitchBothWaysOnSameNode(t *testing.T) {
 	users := []model.UserSpec{{ID: 1, UUID: testUUID}}
 
 	reality := realRealitySpec(port, keys, strings.TrimPrefix(targetSrv.URL, "https://"))
-	s.setDesiredConfig(reality, computeConfigHash(reality))
+	s.setDesiredConfig(reality)
 	s.setDesiredUsers(users)
 	s.reconcile(context.Background())
 	applied(t, s, "vless")
@@ -440,7 +445,7 @@ func TestRealCrossKernelSwitchToXHTTPAndBack(t *testing.T) {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	plain := realPlainVLESSSpec(port)
-	s.setDesiredConfig(plain, computeConfigHash(plain))
+	s.setDesiredConfig(plain)
 	s.setDesiredUsers(users)
 	s.reconcile(context.Background())
 	applied(t, s, "vless")
@@ -511,7 +516,7 @@ func TestRealUnsupportedTargetKeepsPreviousNodeServing(t *testing.T) {
 	port := freePort(t)
 
 	hy := realHysteria2Spec(port)
-	s.setDesiredConfig(hy, computeConfigHash(hy))
+	s.setDesiredConfig(hy)
 	s.setDesiredUsers([]model.UserSpec{{ID: 1, UUID: testUUID}})
 	s.reconcile(context.Background())
 	applied(t, s, "hysteria")
@@ -542,7 +547,7 @@ func TestRealPortBusyRecoversWithoutManualRestart(t *testing.T) {
 	}
 
 	plain := realPlainVLESSSpec(port)
-	s.setDesiredConfig(plain, computeConfigHash(plain))
+	s.setDesiredConfig(plain)
 	s.setDesiredUsers([]model.UserSpec{{ID: 1, UUID: testUUID}})
 	s.reconcile(context.Background())
 	if s.appliedState.Running || s.lastApplyStage != "apply" || !s.retryPending {
@@ -569,7 +574,7 @@ func TestRealHysteria2UserDeltaHotSwap(t *testing.T) {
 	_, target := localHTTPSTarget(t)
 	port := freePort(t)
 	hy := realHysteria2Spec(port)
-	s.setDesiredConfig(hy, computeConfigHash(hy))
+	s.setDesiredConfig(hy)
 	s.setDesiredUsers([]model.UserSpec{{ID: 1, UUID: testUUID}})
 	s.reconcile(context.Background())
 	applied(t, s, "hysteria")

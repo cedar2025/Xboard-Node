@@ -19,7 +19,7 @@ func TestHysteriaConcurrentAuthenticationAndUserRefresh(t *testing.T) {
 	spec := realHysteria2Spec(port)
 	a := model.UserSpec{ID: 1, UUID: testUUID}
 	b := model.UserSpec{ID: 2, UUID: testOtherUUID}
-	s.setDesiredConfig(spec, computeConfigHash(spec))
+	s.setDesiredConfig(spec)
 	s.setDesiredUsers([]model.UserSpec{a, b})
 	s.reconcile(context.Background())
 	applied(t, s, "hysteria")

@@ -310,7 +310,7 @@ var (
 // kernel is serving them".
 func seed(t *testing.T, s *Service, spec *model.NodeSpec, users []model.UserSpec) {
 	t.Helper()
-	s.setDesiredConfig(spec, computeConfigHash(spec))
+	s.setDesiredConfig(spec)
 	s.setDesiredUsers(users)
 	s.reconcile(context.Background())
 	if !s.appliedState.Running || s.appliedState.ConfigHash != s.lastConfigHash {
@@ -424,20 +424,29 @@ func TestApplyUserDeltaAddPreparesLimiterBeforeKernelUpdate(t *testing.T) {
 	}
 }
 
-func TestApplyUserDeltaRotatedUUIDRemovesStaleCredentialFirst(t *testing.T) {
+// A rotated credential arriving as a delta "add" goes through the kernel's
+// full replace, which removes the stale identity before adding the new one; a
+// plain AddUsers would leave the old credential valid.
+func TestApplyUserDeltaRotatedUUIDReplacesTheStaleCredential(t *testing.T) {
 	tk := newTestKernels()
 	s := newTestService(t, tk)
 	seed(t, s, vlessSpec(443), []model.UserSpec{userA})
 
-	var removed []model.UserSpec
-	tk.singbox.onRemoveUsers = func(users []model.UserSpec) { removed = append(removed, users...) }
+	var replaced []model.UserSpec
+	tk.singbox.onUpdateUsers = func(users []model.UserSpec) { replaced = model.CloneUserSpecs(users) }
 	rotated := model.UserSpec{ID: userA.ID, UUID: "cccccccc-0000-0000-0000-000000000000"}
 	s.applyUserDelta(context.Background(), "add", []model.UserSpec{rotated})
-	if len(removed) != 1 || removed[0].UUID != userA.UUID {
-		t.Fatalf("stale credential must be removed before the rotated one is added, removed=%v", removed)
+	if tk.singbox.addCalls != 0 || tk.singbox.updateCalls != 1 {
+		t.Fatalf("rotation must use the full replace: add=%d update=%d", tk.singbox.addCalls, tk.singbox.updateCalls)
 	}
-	if len(s.appliedState.Users) != 1 || s.appliedState.Users[0].UUID != rotated.UUID {
+	if len(replaced) != 1 || replaced[0].UUID != rotated.UUID {
+		t.Fatalf("the kernel must receive the rotated set without the stale credential, got %v", replaced)
+	}
+	if len(s.appliedState.Users) != 1 || s.appliedState.Users[0].UUID != rotated.UUID || s.appliedState.UserHash != s.lastUserHash {
 		t.Fatalf("applied users = %v", s.appliedState.Users)
+	}
+	if start, _, _ := tk.singbox.counts(); start != 1 {
+		t.Fatalf("a rotation must not restart the kernel, starts = %d", start)
 	}
 }
 
@@ -460,7 +469,7 @@ func TestZeroUsersThenUsersStartsKernelOnEveryPath(t *testing.T) {
 			tk := newTestKernels()
 			s := newTestService(t, tk)
 			spec := vlessSpec(443)
-			s.setDesiredConfig(spec, computeConfigHash(spec))
+			s.setDesiredConfig(spec)
 			s.setDesiredUsers(nil)
 			s.reconcile(context.Background())
 			if tk.singbox.IsRunning() {
@@ -610,7 +619,7 @@ func TestApplyFailureDoesNotAdvanceAppliedHashAndDuplicatePushKeepsRetry(t *test
 	tk.singbox.startFailures = 2
 
 	spec := hysteria2Spec(54433)
-	s.setDesiredConfig(spec, computeConfigHash(spec))
+	s.setDesiredConfig(spec)
 	s.setDesiredUsers([]model.UserSpec{userA})
 	s.reconcile(context.Background())
 

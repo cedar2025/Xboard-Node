@@ -132,43 +132,100 @@ func cloneStringSlice(src []string) []string {
 	return out
 }
 
+// The copy helpers below differ from the clone helpers above on purpose: the
+// panel/standalone translators normalise empty containers to nil, whereas a
+// snapshot copy must keep the exact JSON form of its original, because the
+// configuration hash is computed from that form.
+
+// copyAnyValue deep-copies the JSON-shaped values found in settings maps.
+func copyAnyValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		return copyAnyMap(t)
+	case []any:
+		if t == nil {
+			return t
+		}
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = copyAnyValue(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func copyAnyMap(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]any, len(src))
+	for k, v := range src {
+		out[k] = copyAnyValue(v)
+	}
+	return out
+}
+
+func copyMapSlice(src []map[string]any) []map[string]any {
+	if src == nil {
+		return nil
+	}
+	out := make([]map[string]any, len(src))
+	for i, item := range src {
+		out[i] = copyAnyMap(item)
+	}
+	return out
+}
+
+func copyStrings(src []string) []string {
+	if src == nil {
+		return nil
+	}
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
+}
+
 // CloneNodeSpec returns a deep copy of spec. Config generation and state
 // bookkeeping work on copies so that a builder can never rewrite the desired
-// or the applied snapshot.
+// or the applied snapshot. The copy serialises exactly like the original
+// (nil and empty containers are kept apart, nested values are copied), so it
+// has the same configuration hash.
 func CloneNodeSpec(spec *NodeSpec) *NodeSpec {
 	if spec == nil {
 		return nil
 	}
 	clone := *spec
-	clone.NetworkSettings = cloneAnyMap(spec.NetworkSettings)
-	clone.TLSSettings = cloneAnyMap(spec.TLSSettings)
+	clone.NetworkSettings = copyAnyMap(spec.NetworkSettings)
+	clone.TLSSettings = copyAnyMap(spec.TLSSettings)
 	if spec.Routes != nil {
 		clone.Routes = make([]RouteRule, len(spec.Routes))
 		for i, route := range spec.Routes {
 			clone.Routes[i] = route
-			clone.Routes[i].Match = cloneStringSlice(route.Match)
+			clone.Routes[i].Match = copyStrings(route.Match)
 		}
 	}
 	if spec.CustomOutbounds != nil {
 		clone.CustomOutbounds = make([]OutboundConfig, len(spec.CustomOutbounds))
 		for i, outbound := range spec.CustomOutbounds {
 			clone.CustomOutbounds[i] = outbound
-			clone.CustomOutbounds[i].Settings = cloneAnyMap(outbound.Settings)
+			clone.CustomOutbounds[i].Settings = copyAnyMap(outbound.Settings)
 		}
 	}
-	clone.CustomRoutes = cloneMapSlice(spec.CustomRoutes)
+	clone.CustomRoutes = copyMapSlice(spec.CustomRoutes)
 	if spec.CustomRouteRules != nil {
 		clone.CustomRouteRules = make([]CustomRouteRule, len(spec.CustomRouteRules))
 		for i, rule := range spec.CustomRouteRules {
 			clone.CustomRouteRules[i] = rule
 			clone.CustomRouteRules[i].Match = RouteMatch{
-				Domains:        cloneStringSlice(rule.Match.Domains),
-				DomainSuffixes: cloneStringSlice(rule.Match.DomainSuffixes),
-				IPCIDRs:        cloneStringSlice(rule.Match.IPCIDRs),
-				Ports:          cloneStringSlice(rule.Match.Ports),
-				Networks:       cloneStringSlice(rule.Match.Networks),
-				SourceCIDRs:    cloneStringSlice(rule.Match.SourceCIDRs),
-				SourcePorts:    cloneStringSlice(rule.Match.SourcePorts),
+				Domains:        copyStrings(rule.Match.Domains),
+				DomainSuffixes: copyStrings(rule.Match.DomainSuffixes),
+				IPCIDRs:        copyStrings(rule.Match.IPCIDRs),
+				Ports:          copyStrings(rule.Match.Ports),
+				Networks:       copyStrings(rule.Match.Networks),
+				SourceCIDRs:    copyStrings(rule.Match.SourceCIDRs),
+				SourcePorts:    copyStrings(rule.Match.SourcePorts),
 			}
 		}
 	}

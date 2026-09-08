@@ -24,6 +24,11 @@ mark a failed configuration as applied or suppress retry. A newer push
 supersedes conflicting in-flight REST configuration **and user** snapshots,
 including user responses paired with a 304 config.
 
+The desired snapshot is a deep copy owned by the service and hashed from that
+copy; the prepared target copies and hashes that snapshot again, so the
+desired, prepared and applied hashes describe the same content and a caller
+that keeps mutating its own object cannot desynchronise them.
+
 The original kernel preference remains the preference: an automatic XHTTP
 switch to Xray does not permanently change it. Unsupported combinations are
 reported explicitly. The capability table is in internal/model/capability.go;
@@ -95,6 +100,19 @@ Removals and rotations apply to the kernel actually running before retrying
 the desired target. A listener unable to enforce the current user set stops
 and retries instead of retaining revoked credentials. A zero-user node remains
 synchronized and starts when an authorized user appears.
+
+### Xray user updates
+
+Xray applies user changes through its native UserManager one account at a
+time. Every credential to add is converted and checked before the first native
+change, a rotated credential is removed once before its replacement is added,
+and the kernel's bookkeeping only ever describes accounts the UserManager
+holds. A native failure part-way is never reported as success: the instance is
+rebuilt from the desired user set, the same controlled restart used for
+protocols without a UserManager. If that rebuild fails as well, the error
+reaches the service, which stops the listener and retries with the desired
+set rather than keep serving a mixed account set. A removal is treated as
+already done only when the UserManager reports the account absent.
 
 ### Hysteria2 user updates
 

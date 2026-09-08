@@ -418,7 +418,7 @@ func (s *Service) initialSetup(ctx context.Context) error {
 	if users == nil {
 		users = []model.UserSpec{}
 	}
-	s.setDesiredConfig(bootstrap.Config, computeConfigHash(bootstrap.Config))
+	s.setDesiredConfig(bootstrap.Config)
 	s.setDesiredUsers(users)
 
 	s.logf("info", "initial snapshot ready",
@@ -436,15 +436,21 @@ func (s *Service) initialSetup(ctx context.Context) error {
 
 // ─── Desired state ──────────────────────────────────────────────────────────
 
-func (s *Service) setDesiredConfig(spec *model.NodeSpec, hash string) {
+// setDesiredConfig records spec as the desired configuration. The service
+// takes its own deep copy and hashes that copy, so the recorded snapshot and
+// its hash always describe the same content whatever the caller does with its
+// object afterwards. prepareTarget copies and hashes this snapshot again, so
+// a successful apply leaves the desired and applied hashes equal.
+func (s *Service) setDesiredConfig(spec *model.NodeSpec) {
+	snapshot := model.CloneNodeSpec(spec)
 	s.metricsMu.Lock()
-	s.lastConfig = spec
+	s.lastConfig = snapshot
 	s.metricsMu.Unlock()
-	s.lastConfigHash = hash
+	s.lastConfigHash = computeConfigHash(snapshot)
 	s.desiredGen++
 	s.retryAttempts = 0
-	if spec != nil && s.nodeLog == nil {
-		s.nodeLog = nlog.ForNode(spec.Protocol, spec.ServerPort)
+	if snapshot != nil && s.nodeLog == nil {
+		s.nodeLog = nlog.ForNode(snapshot.Protocol, snapshot.ServerPort)
 	}
 }
 
@@ -1018,7 +1024,7 @@ func (s *Service) handleWSEvent(ctx context.Context, event controlplane.Event) {
 			return
 		}
 		s.logf("info", "config received", "protocol", event.Config.Protocol, "port", event.Config.ServerPort, "users", len(s.lastUsers))
-		s.setDesiredConfig(event.Config, newConfigHash)
+		s.setDesiredConfig(event.Config)
 		if event.Users != nil {
 			s.setDesiredUsers(event.Users)
 		}
@@ -1136,7 +1142,7 @@ func (s *Service) applyPullResult(ctx context.Context, result pullResult) {
 
 	if result.config != nil && result.configHash != s.lastConfigHash {
 		s.logf("info", "config received", "protocol", result.config.Protocol, "port", result.config.ServerPort, "source", "rest")
-		s.setDesiredConfig(result.config, result.configHash)
+		s.setDesiredConfig(result.config)
 	}
 	if result.users != nil && result.userHash != s.lastUserHash {
 		s.logf("info", fmt.Sprintf("users updated, %d users", len(result.users)), "source", "rest")
@@ -1170,31 +1176,35 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 			return
 		}
 		merged := mergeUsers(s.lastUsers, deltaUsers)
-		previousApplied := model.CloneUserSpecs(s.appliedState.Users)
+		rotated := rotatesCredential(s.appliedState.Users, deltaUsers)
 		s.setDesiredUsers(merged)
 		if !s.servingDesiredConfig() {
 			s.reconcile(ctx)
 			return
 		}
 		k := s.activeKernel()
-		// A rotated credential keeps its ID: the stale one must leave first.
-		for _, delta := range deltaUsers {
-			for _, old := range previousApplied {
-				if old.ID == delta.ID && old.UUID != delta.UUID {
-					_, _ = k.RemoveUsers([]model.UserSpec{old})
-					break
-				}
+		s.setLimiterUsers(merged)
+		var added int
+		var err error
+		if rotated {
+			// A rotated credential keeps its ID. The kernels' full replace
+			// removes the stale identity before adding the new one; a plain
+			// AddUsers would keep the old credential valid, and a separate
+			// removal could not fail safely (its failure would be followed by
+			// an add that reports success, and on xray removing the only user
+			// stops the kernel).
+			added, _, err = k.UpdateUsers(merged)
+		} else {
+			added, err = k.AddUsers(deltaUsers)
+			if err != nil {
+				s.logf("warn", fmt.Sprintf("AddUsers failed: %v, falling back to UpdateUsers", err))
+				added, _, err = k.UpdateUsers(merged)
 			}
 		}
-		s.setLimiterUsers(merged)
-		added, err := k.AddUsers(deltaUsers)
 		if err != nil {
-			s.logf("warn", fmt.Sprintf("AddUsers failed: %v, falling back to UpdateUsers", err))
-			if _, _, err := k.UpdateUsers(merged); err != nil {
-				s.logf("error", fmt.Sprintf("UpdateUsers fallback failed: %v", err))
-				s.failUserUpdate(err)
-				return
-			}
+			s.logf("error", fmt.Sprintf("user delta add failed: %v", err))
+			s.failUserUpdate(err)
+			return
 		}
 		s.appliedState.Users = model.CloneUserSpecs(merged)
 		s.appliedState.UserHash = s.lastUserHash
@@ -1234,6 +1244,21 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 	default:
 		s.logf("warn", fmt.Sprintf("unknown user delta action: %s", action))
 	}
+}
+
+// rotatesCredential reports whether delta replaces the credential of a user
+// the kernel currently serves (same ID, different UUID).
+func rotatesCredential(applied, delta []model.UserSpec) bool {
+	byID := make(map[int]string, len(applied))
+	for _, u := range applied {
+		byID[u.ID] = u.UUID
+	}
+	for _, u := range delta {
+		if uuid, ok := byID[u.ID]; ok && uuid != u.UUID {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeUsers overlays deltaUsers onto base (keyed by ID). New users are

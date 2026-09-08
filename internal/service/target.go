@@ -98,7 +98,9 @@ func (s *Service) prepareTarget(ctx context.Context, spec *model.NodeSpec, users
 		kernelType:   selection.Kernel,
 		kernelReason: selection.Reason,
 		plan:         plan,
-		configHash:   computeConfigHash(spec),
+		// The hash describes the snapshot that is validated, applied and
+		// recorded as the applied state, never the caller's object.
+		configHash: computeConfigHash(snapshot),
 	}
 	if selection.Reason != "" {
 		target.warnings = append(target.warnings, fmt.Sprintf("kernel %s selected instead of preferred %s: %s", selection.Kernel, s.preferredKernel, selection.Reason))
