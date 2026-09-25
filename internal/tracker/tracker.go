@@ -160,7 +160,8 @@ func (t *Tracker) HasTraffic() bool {
 }
 
 // FlushAliveIPs returns per-user alive IPs.
-// Reuses internal buffer. Returns nil if unchanged.
+// Reuses the internal buffer and reports unchanged snapshots to renew the
+// panel-side device-state TTL.
 func (t *Tracker) FlushAliveIPs() map[int][]string {
 	s := t.live.Load()
 
@@ -170,9 +171,10 @@ func (t *Tracker) FlushAliveIPs() map[int][]string {
 	// Calculate hash of current aliveIPs
 	currentHash := calcAliveIPsHash(s.aliveIPs)
 
-	// If no changes, return nil to avoid duplicate reporting
+	// The panel expires device state after a fixed TTL. Re-send an unchanged
+	// snapshot so a long-lived connection keeps its device lease alive.
 	if currentHash == t.lastAliveIPsHash {
-		return nil
+		return t.aliveIPsBuf
 	}
 
 	t.lastAliveIPsHash = currentHash

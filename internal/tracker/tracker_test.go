@@ -164,10 +164,10 @@ func TestFlushAliveIPs(t *testing.T) {
 		t.Errorf("user 2 IPs: got %d, want 1", len(flushed[2]))
 	}
 
-	// Without another Process call, hash is same → returns nil (skip duplicate)
+	// Unchanged snapshots still need to renew the panel device-state TTL.
 	flushed2 := tr.FlushAliveIPs()
-	if flushed2 != nil {
-		t.Errorf("expected nil on duplicate flush, got %v", flushed2)
+	if len(flushed2[1]) != 2 || len(flushed2[2]) != 1 {
+		t.Errorf("expected unchanged devices to be reported again, got %v", flushed2)
 	}
 }
 
