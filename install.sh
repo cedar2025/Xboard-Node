@@ -137,7 +137,6 @@ resolve_openrc_run() {
 has_openrc_tools() {
     command -v rc-service >/dev/null 2>&1 \
         && command -v rc-update >/dev/null 2>&1 \
-        && command -v checkpath >/dev/null 2>&1 \
         && command -v supervise-daemon >/dev/null 2>&1 \
         && resolve_openrc_run
 }
@@ -223,7 +222,7 @@ detect_init_system() {
     if [ "$INIT_SYSTEM" = "openrc" ]; then
         if ! has_openrc_tools; then
             if [ "$strict" -eq 1 ]; then
-                log_error "OpenRC is required but rc-service, rc-update, checkpath, supervise-daemon, or openrc-run was not found"
+                log_error "OpenRC is required but rc-service, rc-update, supervise-daemon, or openrc-run was not found"
                 exit 1
             fi
             INIT_SYSTEM=""
