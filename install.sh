@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# xboard-node installer with OpenRC support.
+# Detects the running init system and installs either an OpenRC service
+# (Alpine, Gentoo, Devuan, Artix, ...) or the original systemd unit.
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "This installer requires bash. On Alpine: apk add bash" >&2
+    exit 1
+fi
 set -Eeuo pipefail
 
 RED='\033[0;31m'
@@ -15,11 +22,17 @@ INSTALL_META="${INSTALL_ROOT}/install-meta.json"
 CONFIG_FILE="${INSTALL_ROOT}/config.yml"
 CREDENTIALS_FILE="${INSTALL_ROOT}/credentials.env"
 BINARY_PATH="/usr/local/bin/xboard-node"
-SERVICE_NAME="xboard-node.service"
-SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 CLI_PATH="/usr/local/bin/xbctl"
 INSTALLER_COPY_PATH="${INSTALL_ROOT}/install.sh"
 CLI_BINARY_SOURCE=""
+LOG_FILE="/var/log/xboard-node.log"
+ERR_LOG_FILE="/var/log/xboard-node.err"
+OPENRC_RUN="/sbin/openrc-run"
+INIT_SYSTEM=""
+SERVICE_NAME=""
+SERVICE_PATH=""
+SERVICE_MODE=644
+STAGED_SERVICE=""
 DEFAULT_HEALTH_PORT=65530
 DEFAULT_KERNEL="singbox"
 DEFAULT_MODE="node"
@@ -49,6 +62,7 @@ PURGE=0
 YES=0
 ARCH=""
 OS=""
+OS_LIKE=""
 DOWNLOAD_URL=""
 CURRENT_STATE="fresh"
 TMP_DIR=""
@@ -92,6 +106,317 @@ load_health_port_from_config() {
     fi
 }
 
+resolve_openrc_run() {
+    local candidate=""
+    local resolved=""
+    if candidate=$(command -v openrc-run 2>/dev/null); then
+        case "$candidate" in
+            /*)
+                resolved="$candidate"
+                ;;
+            *)
+                if command -v realpath >/dev/null 2>&1; then
+                    resolved=$(realpath "$candidate" 2>/dev/null || true)
+                fi
+                ;;
+        esac
+        if [ -n "$resolved" ] && [ -x "$resolved" ]; then
+            OPENRC_RUN="$resolved"
+            return 0
+        fi
+    fi
+    for candidate in /sbin/openrc-run /usr/sbin/openrc-run /usr/bin/openrc-run; do
+        if [ -x "$candidate" ]; then
+            OPENRC_RUN="$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+has_openrc_tools() {
+    command -v rc-service >/dev/null 2>&1 \
+        && command -v rc-update >/dev/null 2>&1 \
+        && command -v checkpath >/dev/null 2>&1 \
+        && command -v supervise-daemon >/dev/null 2>&1 \
+        && resolve_openrc_run
+}
+
+openrc_runtime_active() {
+    [ -e /run/openrc/softlevel ]
+}
+
+configure_service_paths() {
+    case "$INIT_SYSTEM" in
+        systemd)
+            SERVICE_NAME="xboard-node.service"
+            SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
+            SERVICE_MODE=644
+            STAGED_SERVICE="$SERVICE_NAME"
+            ;;
+        openrc)
+            SERVICE_NAME="xboard-node"
+            SERVICE_PATH="/etc/init.d/${SERVICE_NAME}"
+            SERVICE_MODE=755
+            STAGED_SERVICE="xboard-node.initd"
+            if ! resolve_openrc_run; then
+                log_error "openrc-run was not found"
+                return 1
+            fi
+            ;;
+        *)
+            log_error "Unknown init system: ${INIT_SYSTEM:-<unset>}"
+            return 1
+            ;;
+    esac
+}
+
+detect_init_system() {
+    local strict="${1:-1}"
+    local comm=""
+    INIT_SYSTEM=""
+
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        INIT_SYSTEM="systemd"
+    elif openrc_runtime_active && has_openrc_tools; then
+        INIT_SYSTEM="openrc"
+    else
+        if [ -r /proc/1/comm ]; then
+            comm=$(tr -d '\0' </proc/1/comm 2>/dev/null || true)
+        fi
+        case "$comm" in
+            systemd)
+                INIT_SYSTEM="systemd"
+                ;;
+            openrc|openrc-init)
+                INIT_SYSTEM="openrc"
+                ;;
+            init)
+                if has_openrc_tools && [ ! -d /run/systemd/system ]; then
+                    INIT_SYSTEM="openrc"
+                elif command -v systemctl >/dev/null 2>&1; then
+                    INIT_SYSTEM="systemd"
+                fi
+                ;;
+        esac
+    fi
+
+    if [ -z "$INIT_SYSTEM" ]; then
+        if openrc_runtime_active && has_openrc_tools; then
+            INIT_SYSTEM="openrc"
+        elif command -v systemctl >/dev/null 2>&1; then
+            INIT_SYSTEM="systemd"
+        fi
+    fi
+
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+            if [ "$strict" -eq 1 ]; then
+                log_error "This host does not appear to be running systemd"
+                exit 1
+            fi
+            INIT_SYSTEM=""
+            return 1
+        fi
+    fi
+
+    if [ "$INIT_SYSTEM" = "openrc" ]; then
+        if ! has_openrc_tools; then
+            if [ "$strict" -eq 1 ]; then
+                log_error "OpenRC is required but rc-service, rc-update, checkpath, supervise-daemon, or openrc-run was not found"
+                exit 1
+            fi
+            INIT_SYSTEM=""
+            return 1
+        fi
+        if ! openrc_runtime_active; then
+            if [ "$strict" -eq 1 ]; then
+                log_error "OpenRC is installed but is not the running init system (missing /run/openrc/softlevel)"
+                exit 1
+            fi
+            INIT_SYSTEM=""
+            return 1
+        fi
+    fi
+
+    if [ -z "$INIT_SYSTEM" ]; then
+        if [ "$strict" -eq 1 ]; then
+            log_error "systemd or OpenRC is required for this installer"
+            exit 1
+        fi
+        return 1
+    fi
+
+    configure_service_paths
+    if [ "$strict" -eq 1 ]; then
+        log_info "Init system: ${INIT_SYSTEM}"
+    fi
+}
+
+service_is_active() {
+    case "$INIT_SYSTEM" in
+        systemd)
+            systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1
+            ;;
+        openrc)
+            rc-service "$SERVICE_NAME" status >/dev/null 2>&1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+service_is_enabled() {
+    case "$INIT_SYSTEM" in
+        systemd)
+            systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1
+            ;;
+        openrc)
+            rc-update show default 2>/dev/null | awk -v svc="$SERVICE_NAME" '$1 == svc { found=1 } END { exit(found ? 0 : 1) }'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+reload_service_manager() {
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        systemctl daemon-reload || true
+    fi
+}
+
+enable_service() {
+    case "$INIT_SYSTEM" in
+        systemd)
+            systemctl daemon-reload
+            systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+            ;;
+        openrc)
+            if ! service_is_enabled; then
+                rc-update add "$SERVICE_NAME" default >/dev/null
+            fi
+            ;;
+    esac
+}
+
+disable_service() {
+    case "$INIT_SYSTEM" in
+        systemd)
+            systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+            ;;
+        openrc)
+            rc-update -a del "$SERVICE_NAME" >/dev/null 2>&1 || true
+            ;;
+    esac
+}
+
+stop_service() {
+    case "$INIT_SYSTEM" in
+        systemd)
+            if [ -f "$SERVICE_PATH" ] || systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+                systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+            fi
+            ;;
+        openrc)
+            if [ -f "$SERVICE_PATH" ]; then
+                rc-service "$SERVICE_NAME" stop >/dev/null 2>&1 || true
+            fi
+            ;;
+    esac
+}
+
+openrc_service_status_code() {
+    local rc=0
+    if rc-service "$SERVICE_NAME" status >/dev/null 2>&1; then
+        rc=0
+    else
+        rc=$?
+    fi
+    printf '%s' "$rc"
+}
+
+openrc_zap_if_crashed() {
+    log_warn "OpenRC status for ${SERVICE_NAME} is crashed or unsupervised; zapping stale state before start"
+    rc-service "$SERVICE_NAME" zap >/dev/null 2>&1 || true
+}
+
+openrc_start_or_restart() {
+    local rc
+    rc=$(openrc_service_status_code)
+    case "$rc" in
+        0)
+            rc-service "$SERVICE_NAME" restart
+            ;;
+        32|64)
+            openrc_zap_if_crashed
+            rc-service "$SERVICE_NAME" start
+            ;;
+        *)
+            rc-service "$SERVICE_NAME" start
+            ;;
+    esac
+}
+
+prepare_service_restart() {
+    local rc=0
+    case "$INIT_SYSTEM" in
+        systemd)
+            systemctl reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
+            ;;
+        openrc)
+            rc=$(openrc_service_status_code)
+            case "$rc" in
+                32|64) openrc_zap_if_crashed ;;
+            esac
+            ;;
+    esac
+}
+
+restart_service() {
+    case "$INIT_SYSTEM" in
+        systemd)
+            if service_is_enabled; then
+                systemctl restart "$SERVICE_NAME"
+            else
+                systemctl start "$SERVICE_NAME"
+            fi
+            ;;
+        openrc)
+            openrc_start_or_restart
+            ;;
+    esac
+}
+
+force_restart_service() {
+    case "$INIT_SYSTEM" in
+        systemd)
+            systemctl restart "$SERVICE_NAME"
+            ;;
+        openrc)
+            openrc_start_or_restart
+            ;;
+    esac
+}
+
+install_service_file() {
+    local src="$1"
+    if [ -z "$STAGED_SERVICE" ] || [ "$(basename "$src")" = "xboard-node" ] || [ "$(basename "$src")" = "xbctl" ]; then
+        log_error "Refusing to install the service from the binary staging path"
+        exit 1
+    fi
+    install -m "$SERVICE_MODE" "$src" "$SERVICE_PATH"
+}
+
+warn_foreign_service() {
+    if [ "$INIT_SYSTEM" = "openrc" ] && [ -f /etc/systemd/system/xboard-node.service ]; then
+        log_warn "Found a systemd unit at /etc/systemd/system/xboard-node.service; this run manages the OpenRC service"
+    elif [ "$INIT_SYSTEM" = "systemd" ] && [ -f /etc/init.d/xboard-node ]; then
+        log_warn "Found an OpenRC service at /etc/init.d/xboard-node; this run manages the systemd unit"
+    fi
+}
+
 rollback_install() {
     log_warn "Rolling back installation"
     if [ -n "$BACKUP_PATH" ] && [ -d "$BACKUP_PATH" ]; then
@@ -120,24 +445,25 @@ rollback_install() {
         else
             rm -f "$CLI_PATH"
         fi
-        if [ -f "$BACKUP_PATH/${SERVICE_NAME}" ]; then
-            install -m 644 "$BACKUP_PATH/${SERVICE_NAME}" "$SERVICE_PATH"
-        else
+        if [ -n "$SERVICE_PATH" ] && [ -n "$STAGED_SERVICE" ] && [ -f "$BACKUP_PATH/${STAGED_SERVICE}" ]; then
+            install -m "$SERVICE_MODE" "$BACKUP_PATH/${STAGED_SERVICE}" "$SERVICE_PATH"
+        elif [ -n "$SERVICE_PATH" ]; then
             rm -f "$SERVICE_PATH"
         fi
     fi
     load_health_port_from_config "$CONFIG_FILE"
-    systemctl daemon-reload || true
-    if [ "$SERVICE_EXISTED" -eq 1 ] || [ -f "$SERVICE_PATH" ]; then
-        systemctl reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
-        systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || true
+    reload_service_manager
+    if [ "$SERVICE_EXISTED" -eq 1 ] || { [ -n "$SERVICE_PATH" ] && [ -f "$SERVICE_PATH" ]; }; then
+        prepare_service_restart
+        force_restart_service >/dev/null 2>&1 || true
         if ! wait_for_health; then
             log_error "Rollback completed but restored service did not become healthy"
             show_recent_logs
             return 1
         fi
     else
-        systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+        stop_service
+        disable_service
     fi
     log_warn "Rollback complete"
 }
@@ -160,7 +486,7 @@ trap cleanup_tmp EXIT
 usage() {
     cat <<'HELP'
 
-  xboard-node Installer
+  xboard-node Installer (systemd + OpenRC)
 
   ACTIONS:
     install      Install or reconcile the configured deployment (default)
@@ -168,6 +494,11 @@ usage() {
     uninstall    Remove installed service and binary (config kept unless --purge)
     status       Show current installation status
     help         Show this help
+
+  INIT:
+    Detected automatically.
+    systemd      /etc/systemd/system/xboard-node.service
+    openrc       /etc/init.d/xboard-node  (Alpine, Gentoo, Devuan, Artix, ...)
 
   MODES (auto-detected from --node-id or --machine-id if omitted):
     --mode node      Panel single-node mode (default)
@@ -201,6 +532,9 @@ usage() {
     sudo bash install.sh --panel https://panel.example.com --token TOKEN --machine-id 1
     sudo bash install.sh upgrade
     sudo bash install.sh uninstall --purge --yes
+
+  Alpine does not ship bash. Install it before running this script:
+    apk add bash
 
 HELP
 }
@@ -338,22 +672,13 @@ detect_arch() {
 }
 
 detect_os() {
+    OS="unknown"
+    OS_LIKE=""
     if [ -f /etc/os-release ]; then
+        # shellcheck disable=SC1091
         . /etc/os-release
-        OS="$ID"
-    else
-        OS="unknown"
-    fi
-}
-
-ensure_systemd() {
-    if ! command -v systemctl >/dev/null 2>&1; then
-        log_error "systemd is required for this installer"
-        exit 1
-    fi
-    if [ ! -d /run/systemd/system ]; then
-        log_error "This host does not appear to be running systemd"
-        exit 1
+        OS="${ID:-unknown}"
+        OS_LIKE="${ID_LIKE:-}"
     fi
 }
 
@@ -375,23 +700,56 @@ run_with_retry() {
     return 1
 }
 
+install_apt_deps() {
+    DEBIAN_FRONTEND=noninteractive run_with_retry 10 3 apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive run_with_retry 10 3 apt-get install -y -qq curl wget ca-certificates >/dev/null 2>&1
+}
+
+install_rpm_deps() {
+    if command -v dnf >/dev/null 2>&1; then
+        run_with_retry 5 3 dnf install -y -q curl wget ca-certificates >/dev/null 2>&1
+    else
+        run_with_retry 5 3 yum install -y -q curl wget ca-certificates >/dev/null 2>&1
+    fi
+}
+
+install_apk_deps() {
+    if ! command -v apk >/dev/null 2>&1; then
+        log_error "apk is required to install dependencies on ${OS}"
+        exit 1
+    fi
+    # bash is required for the copied installer and for re-running this script.
+    run_with_retry 5 3 apk add --no-cache bash curl wget ca-certificates
+}
+
 install_dependencies() {
+    local family="unknown"
     case "$OS" in
-        ubuntu|debian)
-            DEBIAN_FRONTEND=noninteractive run_with_retry 10 3 apt-get update -qq
-            DEBIAN_FRONTEND=noninteractive run_with_retry 10 3 apt-get install -y -qq curl wget ca-certificates >/dev/null 2>&1
+        ubuntu|debian|devuan|linuxmint|pop|raspbian) family="apt" ;;
+        centos|rhel|rocky|almalinux|fedora) family="rpm" ;;
+        alpine|postmarketos) family="apk" ;;
+        *)
+            case " ${OS_LIKE} " in
+                *" debian "*|*" ubuntu "*) family="apt" ;;
+                *" rhel "*|*" fedora "*|*" centos "*) family="rpm" ;;
+                *" alpine "*) family="apk" ;;
+            esac
             ;;
-        centos|rhel|rocky|almalinux|fedora)
-            if command -v dnf >/dev/null 2>&1; then
-                run_with_retry 5 3 dnf install -y -q curl wget ca-certificates >/dev/null 2>&1
-            else
-                run_with_retry 5 3 yum install -y -q curl wget ca-certificates >/dev/null 2>&1
-            fi
-            ;;
+    esac
+
+    case "$family" in
+        apt) install_apt_deps ;;
+        rpm) install_rpm_deps ;;
+        apk) install_apk_deps ;;
         *)
             log_warn "OS ${OS} is not in the official support set; continuing best-effort"
             ;;
     esac
+
+    if ! command -v curl >/dev/null 2>&1; then
+        log_error "curl is required but was not found"
+        exit 1
+    fi
 }
 
 ensure_dirs() {
@@ -445,7 +803,9 @@ detect_current_state() {
     local has_binary=0 has_config=0 has_service=0
     [ -x "$BINARY_PATH" ] && has_binary=1
     [ -f "$CONFIG_FILE" ] && has_config=1
-    [ -f "$SERVICE_PATH" ] && has_service=1
+    if [ -n "$SERVICE_PATH" ] && [ -f "$SERVICE_PATH" ]; then
+        has_service=1
+    fi
 
     if [ "$has_binary" -eq 0 ] && [ "$has_config" -eq 0 ] && [ "$has_service" -eq 0 ]; then
         CURRENT_STATE="fresh"
@@ -588,8 +948,8 @@ render_config() {
     chmod 600 "$TMP_DIR/credentials.env"
 }
 
-render_service() {
-    cat >"$TMP_DIR/${SERVICE_NAME}" <<EOF_UNIT
+render_systemd_service() {
+    cat >"$TMP_DIR/${STAGED_SERVICE}" <<EOF_UNIT
 [Unit]
 Description=Xboard Node Backend
 Documentation=https://github.com/cedar2025/xboard-node
@@ -613,6 +973,111 @@ WantedBy=multi-user.target
 EOF_UNIT
 }
 
+openrc_supervise_supports_no_new_privs() {
+    local helper=""
+    local help=""
+    helper=$(command -v supervise-daemon 2>/dev/null || true)
+    [ -n "$helper" ] || return 1
+    help=$("$helper" --help 2>&1 || true)
+    case "$help" in
+        *--no-new-privs*) return 0 ;;
+    esac
+    return 1
+}
+
+render_openrc_service() {
+    local staged="$TMP_DIR/${STAGED_SERVICE}"
+    local supervise_args_line=""
+    if ! command -v supervise-daemon >/dev/null 2>&1; then
+        log_warn "supervise-daemon was not found in PATH; omitting --no-new-privs (OpenRC resolves the helper when the service starts)"
+    elif openrc_supervise_supports_no_new_privs; then
+        supervise_args_line='supervise_daemon_args="--no-new-privs"'
+    else
+        log_warn "supervise-daemon does not support --no-new-privs; omitting it so older OpenRC can start the service"
+    fi
+    cat >"$staged" <<'EOF_INIT'
+#!@OPENRC_RUN@
+
+name="xboard-node"
+description="Xboard Node Backend"
+supervisor=supervise-daemon
+command="@BINARY_PATH@"
+command_args="-c @CONFIG_FILE@"
+directory="@INSTALL_ROOT@"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="@LOG_FILE@"
+error_log="@ERR_LOG_FILE@"
+respawn_delay=5
+respawn_max=0
+rc_ulimit="-n 1048576"
+@SUPERVISE_DAEMON_ARGS_LINE@
+required_files="@CONFIG_FILE@"
+
+depend() {
+    use net dns
+    after net firewall
+}
+
+xboard_node_load_env() {
+    env_file=$1
+    cr=$(printf '\r')
+    [ -f "$env_file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=${line%"$cr"}
+        case "$line" in
+            ""|\#*|\;*) continue ;;
+        esac
+        line=${line#export }
+        case "$line" in
+            *=*) ;;
+            *) continue ;;
+        esac
+        key=${line%%=*}
+        value=${line#*=}
+        case "$value" in
+            \"*\") value=${value#\"}; value=${value%\"} ;;
+            \'*\') value=${value#\'}; value=${value%\'} ;;
+        esac
+        case "$key" in
+            [A-Za-z_][A-Za-z0-9_]*) export "$key=$value" ;;
+        esac
+    done < "$env_file"
+}
+
+start_pre() {
+    checkpath --directory --mode 0755 /run
+    checkpath --file --mode 0640 "@LOG_FILE@"
+    checkpath --file --mode 0640 "@ERR_LOG_FILE@"
+    xboard_node_load_env "@CREDENTIALS_FILE@"
+}
+EOF_INIT
+    if [ -n "$supervise_args_line" ]; then
+        sed -i 's|@SUPERVISE_DAEMON_ARGS_LINE@|'"${supervise_args_line}"'|' "$staged"
+    else
+        sed -i '/@SUPERVISE_DAEMON_ARGS_LINE@/d' "$staged"
+    fi
+    if grep -q '@SUPERVISE_DAEMON_ARGS_LINE@' "$staged"; then
+        log_error "Failed to render OpenRC supervise-daemon arguments"
+        return 1
+    fi
+    sed -i \
+        -e "s|@OPENRC_RUN@|${OPENRC_RUN}|g" \
+        -e "s|@BINARY_PATH@|${BINARY_PATH}|g" \
+        -e "s|@CONFIG_FILE@|${CONFIG_FILE}|g" \
+        -e "s|@INSTALL_ROOT@|${INSTALL_ROOT}|g" \
+        -e "s|@LOG_FILE@|${LOG_FILE}|g" \
+        -e "s|@ERR_LOG_FILE@|${ERR_LOG_FILE}|g" \
+        -e "s|@CREDENTIALS_FILE@|${CREDENTIALS_FILE}|g" \
+        "$staged"
+}
+
+render_service() {
+    case "$INIT_SYSTEM" in
+        systemd) render_systemd_service ;;
+        openrc) render_openrc_service ;;
+    esac
+}
+
 backup_existing_state() {
     BACKUP_PATH="${BACKUP_DIR}/$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$BACKUP_PATH"
@@ -631,38 +1096,35 @@ backup_existing_state() {
     if [ -f "$INSTALL_META" ]; then
         cp "$INSTALL_META" "$BACKUP_PATH/install-meta.json"
     fi
-    if [ -f "$SERVICE_PATH" ]; then
-        cp "$SERVICE_PATH" "$BACKUP_PATH/${SERVICE_NAME}"
+    if [ -n "$SERVICE_PATH" ] && [ -f "$SERVICE_PATH" ]; then
+        cp "$SERVICE_PATH" "$BACKUP_PATH/${STAGED_SERVICE}"
         SERVICE_EXISTED=1
     else
         SERVICE_EXISTED=0
     fi
 }
 
-stop_existing_service() {
-    if [ -f "$SERVICE_PATH" ] || systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
-        systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+copy_installer() {
+    if [ -f "$0" ] && [ "$(realpath "$0")" != "$(realpath "$INSTALLER_COPY_PATH" 2>/dev/null || echo "$INSTALLER_COPY_PATH")" ]; then
+        install -m 755 "$0" "$INSTALLER_COPY_PATH"
     fi
 }
 
 install_staged_files() {
-    stop_existing_service
+    stop_service
     install -m 755 "$TMP_DIR/xboard-node" "$BINARY_PATH"
     install -m 600 "$TMP_DIR/config.yml" "$CONFIG_FILE"
     install -m 600 "$TMP_DIR/credentials.env" "$CREDENTIALS_FILE"
     install -m 644 "$TMP_DIR/install-meta.json" "$INSTALL_META"
-    if [ -f "$0" ] && [ "$(realpath "$0")" != "$(realpath "$INSTALLER_COPY_PATH" 2>/dev/null || echo "$INSTALLER_COPY_PATH")" ]; then
-        install -m 755 "$0" "$INSTALLER_COPY_PATH"
-    fi
+    copy_installer
     install -m 755 "$TMP_DIR/xbctl" "$CLI_PATH"
     ln -sf "$CLI_PATH" /usr/bin/xbctl 2>/dev/null || true
-    install -m 644 "$TMP_DIR/${SERVICE_NAME}" "$SERVICE_PATH"
-    systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
+    install_service_file "$TMP_DIR/${STAGED_SERVICE}"
+    enable_service
 }
 
 wait_for_health() {
-    if ! systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+    if ! service_is_active; then
         return 1
     fi
     if [ "$HEALTH_ENABLED" -eq 0 ]; then
@@ -671,7 +1133,7 @@ wait_for_health() {
     local attempt=0
     local max_attempts=30
     while [ "$attempt" -lt "$max_attempts" ]; do
-        if ! systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+        if ! service_is_active; then
             return 1
         fi
         if curl -fsS "http://127.0.0.1:${HEALTH_PORT}/healthz" >/dev/null 2>&1; then
@@ -684,17 +1146,30 @@ wait_for_health() {
 }
 
 show_recent_logs() {
-    if command -v journalctl >/dev/null 2>&1; then
-        journalctl -u "$SERVICE_NAME" -n 30 --no-pager || true
-    fi
+    case "$INIT_SYSTEM" in
+        systemd)
+            if command -v journalctl >/dev/null 2>&1; then
+                journalctl -u "$SERVICE_NAME" -n 30 --no-pager || true
+            fi
+            ;;
+        openrc)
+            if [ -f "$LOG_FILE" ]; then
+                log_warn "Recent stdout (${LOG_FILE}):"
+                tail -n 30 "$LOG_FILE" || true
+            fi
+            if [ -f "$ERR_LOG_FILE" ]; then
+                log_warn "Recent stderr (${ERR_LOG_FILE}):"
+                tail -n 30 "$ERR_LOG_FILE" || true
+            fi
+            if [ ! -f "$LOG_FILE" ] && [ ! -f "$ERR_LOG_FILE" ]; then
+                log_warn "No OpenRC logs found at ${LOG_FILE}"
+            fi
+            ;;
+    esac
 }
 
 start_service() {
-    if systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
-        systemctl restart "$SERVICE_NAME"
-    else
-        systemctl start "$SERVICE_NAME"
-    fi
+    restart_service
     if ! wait_for_health; then
         log_error "Service failed health check"
         show_recent_logs
@@ -702,10 +1177,25 @@ start_service() {
     fi
 }
 
+print_manage_hints() {
+    case "$INIT_SYSTEM" in
+        openrc)
+            log_info "Manage: rc-service ${SERVICE_NAME} status|restart|stop"
+            log_info "Enable: rc-update add ${SERVICE_NAME} default"
+            log_info "Logs:   ${LOG_FILE}"
+            ;;
+        systemd)
+            log_info "Manage: systemctl status ${SERVICE_NAME}"
+            log_info "Logs:   journalctl -u ${SERVICE_NAME} -n 50 --no-pager"
+            ;;
+    esac
+}
+
 perform_install() {
     validate_install_request
     detect_current_state
     require_reconfigure_confirmation
+    warn_foreign_service
     TMP_DIR=$(mktemp -d)
     ensure_dirs
     stage_binary
@@ -717,6 +1207,7 @@ perform_install() {
     start_service
 
     log_info "Installation succeeded"
+    log_info "Init: ${INIT_SYSTEM}"
     log_info "Service: ${SERVICE_NAME}"
     log_info "Config: ${CONFIG_FILE}"
     log_info "Credentials: ${CREDENTIALS_FILE}"
@@ -724,6 +1215,7 @@ perform_install() {
         log_info "Health: http://127.0.0.1:${HEALTH_PORT}/healthz"
     fi
     log_info "CLI: ${CLI_PATH}  (run '${CLI_PATH} list' if xbctl is not in PATH)"
+    print_manage_hints
 }
 
 perform_upgrade() {
@@ -742,15 +1234,17 @@ perform_upgrade() {
     install -m 755 "$TMP_DIR/xboard-node" "$BINARY_PATH"
     install -m 755 "$TMP_DIR/xbctl" "$CLI_PATH"
     ln -sf "$CLI_PATH" /usr/bin/xbctl 2>/dev/null || true
-    install -m 644 "$TMP_DIR/${SERVICE_NAME}" "$SERVICE_PATH"
-    systemctl daemon-reload
-    systemctl restart "$SERVICE_NAME"
+    copy_installer
+    install_service_file "$TMP_DIR/${STAGED_SERVICE}"
+    reload_service_manager
+    force_restart_service
     if ! wait_for_health; then
         log_error "Upgrade health check failed"
         show_recent_logs
         return 1
     fi
     log_info "Upgrade succeeded"
+    print_manage_hints
 }
 
 confirm_uninstall() {
@@ -767,16 +1261,21 @@ confirm_uninstall() {
 
 perform_uninstall() {
     confirm_uninstall
-    if [ -f "$SERVICE_PATH" ]; then
-        systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
-        systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+    if [ -n "$SERVICE_PATH" ] && [ -f "$SERVICE_PATH" ]; then
+        stop_service
+        disable_service
+        if [ "$INIT_SYSTEM" = "openrc" ]; then
+            rc-service "$SERVICE_NAME" zap >/dev/null 2>&1 || true
+            rm -f "/run/${SERVICE_NAME}.pid" "/var/run/${SERVICE_NAME}.pid"
+        fi
         rm -f "$SERVICE_PATH"
-        systemctl daemon-reload || true
+        reload_service_manager
     fi
     rm -f "$BINARY_PATH"
     rm -f "$CLI_PATH"
     rm -f /usr/bin/xbctl 2>/dev/null || true
     if [ "$PURGE" -eq 1 ]; then
+        rm -f "$LOG_FILE" "$ERR_LOG_FILE"
         rm -rf "$INSTALL_ROOT"
         log_info "Removed ${INSTALL_ROOT}"
     else
@@ -791,6 +1290,11 @@ perform_status() {
     echo
     echo -e "${BOLD}xboard-node install status${NC}"
     echo "  state:   ${CURRENT_STATE}"
+    if [ -n "$INIT_SYSTEM" ]; then
+        echo "  init:    ${INIT_SYSTEM}"
+    else
+        echo "  init:    undetected"
+    fi
     if [ -f "$INSTALL_META" ]; then
         echo "  meta:    ${INSTALL_META}"
         if [ -x "$CLI_PATH" ]; then
@@ -805,9 +1309,21 @@ perform_status() {
             done
         fi
     fi
-    if [ -f "$SERVICE_PATH" ]; then
-        echo "  service: ${SERVICE_NAME}"
-        systemctl status "$SERVICE_NAME" --no-pager || true
+    if [ -n "$SERVICE_PATH" ] && [ -f "$SERVICE_PATH" ]; then
+        echo "  service: ${SERVICE_NAME} (${SERVICE_PATH})"
+        case "$INIT_SYSTEM" in
+            systemd)
+                systemctl status "$SERVICE_NAME" --no-pager || true
+                ;;
+            openrc)
+                rc-service "$SERVICE_NAME" status || true
+                if service_is_enabled; then
+                    echo "  boot:    enabled (default)"
+                else
+                    echo "  boot:    disabled"
+                fi
+                ;;
+        esac
     fi
 }
 
@@ -819,7 +1335,7 @@ main() {
             exit 0
             ;;
         status)
-            ensure_systemd
+            detect_init_system 0 || true
             perform_status
             exit 0
             ;;
@@ -828,7 +1344,7 @@ main() {
     check_root
     detect_arch
     detect_os
-    ensure_systemd
+    detect_init_system 1
     install_dependencies
 
     case "$ACTION" in
