@@ -31,7 +31,7 @@ vim config/config.yml   # set panel.url / token / node_id
 docker compose up -d
 ```
 
-### Installer (Linux systemd)
+### Installer (Linux systemd/OpenRC)
 
 ```bash
 # Node mode
