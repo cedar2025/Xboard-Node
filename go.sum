@@ -136,6 +136,8 @@ github.com/cloudflare/circl v1.6.3 h1:9GPOhQGF9MCYUeXyMYlqTR6a5gTrgR/fBLXvUgtVcg
 github.com/cloudflare/circl v1.6.3/go.mod h1:2eXP6Qfat4O/Yhh8BznvKnJ+uzEoTQ6jVKJRn81BiS4=
 github.com/coder/websocket v1.8.14 h1:9L0p0iKiNOibykf283eHkKUHHrpG7f65OE3BhhO7v9g=
 github.com/coder/websocket v1.8.14/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
+github.com/coolcrow/sing-box v1.14.0-alpha.2.0.20260825070404-4fae42afa21d h1:5CPcbeNvaXJH/563icbq17ts0I8ExKmiXurq05/YmrE=
+github.com/coolcrow/sing-box v1.14.0-alpha.2.0.20260825070404-4fae42afa21d/go.mod h1:DTyWqWrjh/DqOHynCUgMhW8fgrkctleficRKwQmh668=
 github.com/corbym/gocrest v1.0.3/go.mod h1:maVFL5lbdS2PgfOQgGRWDYTeunSWQeiEgoNdTABShCs=
 github.com/coreos/bbolt v1.3.2/go.mod h1:iRUV2dpdMOn7Bo10OQBFzIJO9kkE559Wcmn+qkEiiKk=
 github.com/coreos/etcd v3.3.13+incompatible/go.mod h1:uF7uidLiAD3TWHmW31ZFd/JWoc32PjwdhPthX9715RE=

@@ -148,39 +148,38 @@ func TestRestoreTraffic_Additive(t *testing.T) {
 	}
 }
 
-func TestFlushAliveIPs(t *testing.T) {
+func TestAliveIPsReportsCurrentStateOnEveryCall(t *testing.T) {
 	tr := New()
-	aliveIPs := map[int]map[string]bool{
+	tr.Process(map[int][2]int64{1: {100, 200}, 2: {30, 40}}, map[int]map[string]bool{
 		1: {"1.1.1.1": true, "2.2.2.2": true},
 		2: {"3.3.3.3": true},
-	}
-	tr.Process(map[int][2]int64{1: {100, 200}, 2: {30, 40}}, aliveIPs, 3)
+	}, 3)
 
-	flushed := tr.FlushAliveIPs()
-	if len(flushed[1]) != 2 {
-		t.Errorf("user 1 IPs: got %d, want 2", len(flushed[1]))
-	}
-	if len(flushed[2]) != 1 {
-		t.Errorf("user 2 IPs: got %d, want 1", len(flushed[2]))
-	}
-
-	// Without another Process call, hash is same → returns nil (skip duplicate)
-	flushed2 := tr.FlushAliveIPs()
-	if flushed2 != nil {
-		t.Errorf("expected nil on duplicate flush, got %v", flushed2)
+	// An unchanged device set must still be reported: the panel expires
+	// device records it has not seen for five minutes.
+	for i := 0; i < 2; i++ {
+		alive := tr.AliveIPs()
+		if len(alive[1]) != 2 || len(alive[2]) != 1 {
+			t.Fatalf("call %d: AliveIPs() = %v", i, alive)
+		}
 	}
 }
 
-func TestFlushAliveIPs_DedupSameIP(t *testing.T) {
+func TestAliveIPsSnapshotsAreIndependent(t *testing.T) {
 	tr := New()
-	aliveIPs := map[int]map[string]bool{
-		1: {"1.1.1.1": true},
-	}
-	tr.Process(map[int][2]int64{1: {100, 200}}, aliveIPs, 2)
+	tr.Process(nil, map[int]map[string]bool{1: {"1.1.1.1": true}}, 1)
+	first := tr.AliveIPs()
 
-	flushed := tr.FlushAliveIPs()
-	if len(flushed[1]) != 1 {
-		t.Errorf("expected 1 IP, got %d", len(flushed[1]))
+	// A report goroutine may still be encoding first while the service takes
+	// the next snapshot.
+	tr.Process(nil, map[int]map[string]bool{2: {"2.2.2.2": true}}, 1)
+	second := tr.AliveIPs()
+
+	if len(first) != 1 || len(first[1]) != 1 || first[1][0] != "1.1.1.1" {
+		t.Fatalf("first snapshot changed to %v", first)
+	}
+	if len(second) != 1 || len(second[2]) != 1 || second[2][0] != "2.2.2.2" {
+		t.Fatalf("second snapshot = %v", second)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"sort"
 	"strings"
 	"sync"
@@ -71,6 +72,11 @@ type Service struct {
 	wsCancel         context.CancelFunc             // cancels the WS client goroutine
 	wsDisconnectAt   time.Time                      // when WS last disconnected (zero if connected)
 	wsResyncPending  atomic.Bool
+	wsStatusSeen     atomic.Bool
+	wsConnected      atomic.Bool
+	wsEverConnected  atomic.Bool
+	wsStatusVersion  atomic.Uint64
+	wsReconnectDelay func() time.Duration
 	machineMailbox   *controlplane.NodeMailbox
 	machineMailboxCh <-chan struct{}
 
@@ -247,6 +253,7 @@ func (s *Service) Run(ctx context.Context) error {
 func (s *Service) initialSetup(ctx context.Context) error {
 	// Register speed limit lookup with kernel unconditionally (before push/poll branch).
 	s.kernel.SetSpeedLimitFunc(s.speedTracker.GetLimiter)
+	s.kernel.SetUploadLimitFunc(s.speedTracker.GetUploadLimiter)
 	s.kernel.SetDeviceLimitFunc(s.limiter.GetDeviceLimitByUUID)
 
 	bootstrap, err := s.source.Initial(ctx, s.wsMetrics, s.wsEvents, s.wsStatusCh)
@@ -379,6 +386,21 @@ func (s *Service) startWSClient(ctx context.Context) {
 	if s.wsClient == nil {
 		return
 	}
+	// Machine-mode nodes may register after the shared WS mux is already
+	// connected and therefore miss its initial connected notification. Seed the
+	// local status so the next disconnect/reconnect is still treated as a real
+	// reconnect and receives delayed reconciliation.
+	if s.wsClient.IsConnected() {
+		s.wsStatusSeen.Store(true)
+		s.wsConnected.Store(true)
+		s.wsEverConnected.Store(true)
+	} else {
+		s.metricsMu.Lock()
+		if s.wsDisconnectAt.IsZero() {
+			s.wsDisconnectAt = time.Now()
+		}
+		s.metricsMu.Unlock()
+	}
 	wsCtx, wsCancel := context.WithCancel(ctx)
 	s.wsCancel = wsCancel
 	go s.wsClient.Run(wsCtx)
@@ -437,14 +459,23 @@ func (s *Service) wsMetrics() map[string]interface{} {
 	return m
 }
 
-// handleWSStatus reacts to WS connectivity changes.
-
-// - On disconnect: record timestamp, immediately REST poll.
-// - On reconnect: clear disconnect timestamp, REST poll to catch missed events.
+// handleWSStatus reacts only to real WS connectivity transitions. Initial()
+// already fetched a complete snapshot, so the initial connection and a
+// disconnect do not need an immediate REST poll. A later reconnect schedules
+// one jittered reconciliation to catch missed events without a fleet-wide
+// thundering herd.
 func (s *Service) handleWSStatus(ctx context.Context, status controlplane.StatusChange) {
 	if status.NeedsResync {
 		s.requestWSResync(ctx, "drop_detected")
 	}
+	seen := s.wsStatusSeen.Swap(true)
+	wasConnected := s.wsConnected.Swap(status.Connected)
+	if seen && wasConnected == status.Connected {
+		nlog.Core().Debug("duplicate ws status ignored", "connected", status.Connected)
+		return
+	}
+	version := s.wsStatusVersion.Add(1)
+
 	if status.Connected {
 		s.metricsMu.Lock()
 		s.wsDisconnectAt = time.Time{}
@@ -455,9 +486,9 @@ func (s *Service) handleWSStatus(ctx context.Context, status controlplane.Status
 		} else {
 			nlog.Core().Info("ws connected")
 		}
-		// After reconnect, proactively pull once to ensure we haven't missed
-		// any updates during the disconnection window.
-		s.pullViaAPIAsync(ctx)
+		if s.wsEverConnected.Swap(true) {
+			s.scheduleWSReconnectReconcile(ctx, version)
+		}
 	} else {
 		s.metricsMu.Lock()
 		if s.wsDisconnectAt.IsZero() {
@@ -471,8 +502,42 @@ func (s *Service) handleWSStatus(ctx context.Context, status controlplane.Status
 		}
 		// Clear global device state on disconnect
 		s.kernel.ClearGlobalDevices()
-		s.pullViaAPIAsync(ctx)
 	}
+}
+
+const (
+	wsReconnectReconcileMinDelay = 5 * time.Second
+	wsReconnectReconcileJitter   = 25 * time.Second
+)
+
+func (s *Service) nextWSReconnectDelay() time.Duration {
+	if s.wsReconnectDelay != nil {
+		return s.wsReconnectDelay()
+	}
+	return wsReconnectReconcileMinDelay + time.Duration(rand.Int63n(int64(wsReconnectReconcileJitter)))
+}
+
+func (s *Service) scheduleWSReconnectReconcile(ctx context.Context, version uint64) {
+	delay := s.nextWSReconnectDelay()
+	if s.nodeLog != nil {
+		s.nodeLog.Info("ws reconnected, scheduling REST reconciliation", "delay", delay)
+	} else {
+		nlog.Core().Info("ws reconnected, scheduling REST reconciliation", "delay", delay)
+	}
+
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		if s.wsStatusVersion.Load() != version || !s.wsConnected.Load() {
+			return
+		}
+		s.pullViaAPIAsync(ctx)
+	}()
 }
 
 // wsDiscovery periodically checks WS availability:
@@ -807,8 +872,10 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 		for _, delta := range deltaUsers {
 			for _, old := range s.lastUsers {
 				if old.ID == delta.ID && old.UUID != delta.UUID {
-					s.kernel.RemoveUsers([]model.UserSpec{old})
-					break
+					// Replace in one update. A separate RemoveUsers can stop the
+					// kernel when this is its final user, and hides removal errors.
+					s.applyUserUpdate(ctx, merged, computeUserHash(merged))
+					return
 				}
 			}
 		}
@@ -976,7 +1043,7 @@ func (s *Service) pushReportAsync() {
 	}
 
 	traffic := s.tracker.FlushTraffic()
-	aliveIPs := s.tracker.FlushAliveIPs()
+	aliveIPs := s.reportAliveIPs()
 	online := s.tracker.CurrentOnline()
 	status := monitor.Collect()
 	metrics := s.buildMetrics(status)
@@ -988,9 +1055,6 @@ func (s *Service) pushReportAsync() {
 			nlog.Core().Warn("failed to push report", "error", err)
 			if len(traffic) > 0 {
 				s.tracker.RestoreTraffic(traffic)
-			}
-			if len(aliveIPs) > 0 {
-				s.tracker.RestoreAliveIPs(aliveIPs)
 			}
 			s.pushBackoff.onFailure()
 			return
@@ -1006,7 +1070,7 @@ func (s *Service) pushReportSync() {
 		return
 	}
 	traffic := s.tracker.FlushTraffic()
-	aliveIPs := s.tracker.FlushAliveIPs()
+	aliveIPs := s.reportAliveIPs()
 	online := s.tracker.CurrentOnline()
 	status := monitor.Collect()
 	metrics := s.buildMetrics(status)
@@ -1128,18 +1192,30 @@ func computeUserHash(users []model.UserSpec) string {
 
 // ─── Device management ──────────────────────────────────────────────────
 
-// sendDeviceBatch reports local device snapshot to panel via WS.
+// devicesViaPush reports whether device snapshots go over the WS device
+// channel, which the panel treats as the node's complete device set.
+func (s *Service) devicesViaPush() bool {
+	return s.sink.SupportsDeviceReports() && s.wsClient != nil && s.wsClient.IsConnected()
+}
+
+// reportAliveIPs returns the alive IPs a panel report carries: none while the
+// WS device channel is up, the full current set otherwise.
+func (s *Service) reportAliveIPs() map[int][]string {
+	if s.devicesViaPush() {
+		return nil
+	}
+	return s.tracker.AliveIPs()
+}
+
+// sendDeviceBatch reports the full local device snapshot to the panel via WS,
+// unchanged or not. The panel forgets devices it has not heard about for five
+// minutes and pushes global device state back only after a device report.
 func (s *Service) sendDeviceBatch() {
-	if s.wsClient == nil || !s.wsClient.IsConnected() {
+	if !s.devicesViaPush() {
 		return
 	}
 
-	devices := s.tracker.FlushAliveIPs()
-	// FlushAliveIPs returns nil if no changes since last flush
-	if devices == nil {
-		nlog.Core().Debug("device snapshot unchanged, skipping")
-		return
-	}
+	devices := s.tracker.AliveIPs()
 	s.sink.ReportDevices(s.wsClient, devices)
 	nlog.Core().Debug("device snapshot sent", "users", len(devices))
 }

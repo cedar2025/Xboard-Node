@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/url"
+	"sort"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -74,9 +75,75 @@ type syncUserDeltaPayload struct {
 
 // syncDevicesPayload carries global device state from panel.
 type syncDevicesPayload struct {
-	Users     map[int][]string `json:"users"`
-	Timestamp int64            `json:"timestamp"`
-	NodeID    int              `json:"node_id"`
+	Users     interface{} `json:"users"` // userID → IPs; see parseDeviceUsers
+	Timestamp int64       `json:"timestamp"`
+	NodeID    int         `json:"node_id"`
+}
+
+// parseDeviceUsers reads the users field of sync.devices. The panel builds
+// each IP list with PHP array_unique, which keeps the original keys, so a
+// list with a duplicate ahead of another IP arrives as an object keyed by
+// position; an empty user set arrives as []. Both are accepted.
+func parseDeviceUsers(v interface{}) (map[int][]string, error) {
+	switch users := v.(type) {
+	case nil:
+		return nil, nil
+	case []interface{}:
+		if len(users) != 0 {
+			return nil, fmt.Errorf("users: unexpected list of %d entries", len(users))
+		}
+		return map[int][]string{}, nil
+	case map[string]interface{}:
+		out := make(map[int][]string, len(users))
+		for key, raw := range users {
+			uid, err := strconv.Atoi(key)
+			if err != nil {
+				return nil, fmt.Errorf("users: bad user id %q", key)
+			}
+			ips, err := parseIPList(raw)
+			if err != nil {
+				return nil, fmt.Errorf("users[%s]: %w", key, err)
+			}
+			out[uid] = ips
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("users: unexpected %T", v)
+	}
+}
+
+// parseIPList reads one user's IPs from a JSON array or a position-keyed
+// object, keeping the positional order.
+func parseIPList(v interface{}) ([]string, error) {
+	var items []interface{}
+	switch list := v.(type) {
+	case []interface{}:
+		items = list
+	case map[string]interface{}:
+		keys := make([]int, 0, len(list))
+		for key := range list {
+			i, err := strconv.Atoi(key)
+			if err != nil {
+				return nil, fmt.Errorf("bad position %q", key)
+			}
+			keys = append(keys, i)
+		}
+		sort.Ints(keys)
+		for _, i := range keys {
+			items = append(items, list[strconv.Itoa(i)])
+		}
+	default:
+		return nil, fmt.Errorf("unexpected %T", v)
+	}
+	ips := make([]string, 0, len(items))
+	for _, item := range items {
+		ip, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("unexpected %T", item)
+		}
+		ips = append(ips, ip)
+	}
+	return ips, nil
 }
 
 // syncNodesPayload carries the updated node list for a machine.
@@ -163,9 +230,6 @@ func (w *WSClient) Run(ctx context.Context) {
 
 		if err != nil {
 			nlog.Core().Warn("ws disconnected", "error", err)
-			if !wasConnected {
-				w.notifyStatus(false)
-			}
 		}
 
 		select {
@@ -426,7 +490,12 @@ func (w *WSClient) handleDataEvent(msg wsMessage) {
 			nlog.Core().Warn("ws: cannot decode devices payload", "error", err)
 			return
 		}
-		event.DeviceUsers = p.Users
+		users, err := parseDeviceUsers(p.Users)
+		if err != nil {
+			nlog.Core().Warn("ws: cannot decode devices payload", "error", err)
+			return
+		}
+		event.DeviceUsers = users
 		event.NodeID = p.NodeID
 
 	case WSEventSyncNodes:

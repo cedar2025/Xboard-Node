@@ -5,6 +5,7 @@ package machine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -18,11 +19,37 @@ import (
 	"github.com/cedar2025/xboard-node/internal/service"
 )
 
+// Restart backoff for a node whose service exits on its own. A node is
+// restarted by the next rediscover once its backoff has elapsed.
+const (
+	restartBackoffInitial = 10 * time.Second
+	restartBackoffMax     = 5 * time.Minute
+	// A node that ran at least this long before exiting starts its backoff afresh.
+	restartResetAfter = 10 * time.Minute
+)
+
+// errNodeReturned stands in for the exit error of a service that returned
+// nil although nobody asked it to stop.
+var errNodeReturned = errors.New("node service returned without error")
+
+// nodeRunner is the part of service.Service the orchestrator drives.
+type nodeRunner interface {
+	Run(ctx context.Context) error
+}
+
 // nodeHandle tracks a running node service.
 type nodeHandle struct {
-	cancel  context.CancelFunc
-	done    chan struct{}
-	mailbox *controlplane.NodeMailbox
+	cancel    context.CancelFunc
+	done      chan struct{}
+	mailbox   *controlplane.NodeMailbox
+	startedAt time.Time
+}
+
+// restartState tracks a node whose service exited without being stopped.
+type restartState struct {
+	failures  int // consecutive exits
+	notBefore time.Time
+	lastErr   error
 }
 
 // Orchestrator manages all nodes bound to a panel machine. It:
@@ -34,8 +61,9 @@ type Orchestrator struct {
 	cfg    *config.Config
 	client *panel.Client // machine-level client (no node_id)
 
-	mu    sync.Mutex
-	nodes map[int]*nodeHandle // node_id → handle
+	mu       sync.Mutex
+	nodes    map[int]*nodeHandle   // node_id → handle
+	restarts map[int]*restartState // node_id → pending restart after an exit
 
 	// Per-node mailbox keyed by node_id. Shared WS events are aggregated here
 	// and each node service drains the latest state when ready.
@@ -53,6 +81,10 @@ type Orchestrator struct {
 
 	pullInterval time.Duration
 	pushInterval time.Duration
+
+	// Seams for tests.
+	newRunner func(mn panel.MachineNode, mb *controlplane.NodeMailbox) nodeRunner
+	now       func() time.Time
 }
 
 // New creates a machine orchestrator from the given config.
@@ -62,13 +94,17 @@ func New(cfg *config.Config) *Orchestrator {
 		Token:     cfg.Machine.Token,
 		MachineID: cfg.Machine.MachineID,
 	}
-	return &Orchestrator{
+	o := &Orchestrator{
 		cfg:       cfg,
 		client:    panel.NewClient(panelCfg),
 		nodes:     make(map[int]*nodeHandle),
+		restarts:  make(map[int]*restartState),
 		mailboxes: make(map[int]*controlplane.NodeMailbox),
 		statuses:  make(map[int]chan<- controlplane.StatusChange),
+		now:       time.Now,
 	}
+	o.newRunner = o.newNodeService
+	return o
 }
 
 // Run is the main loop. It blocks until ctx is cancelled.
@@ -120,17 +156,45 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 		o.mu.Unlock()
 		return
 	}
+	var restart restartState
+	rs, restarting := o.restarts[mn.ID]
+	if restarting {
+		if o.now().Before(rs.notBefore) {
+			o.mu.Unlock()
+			return
+		}
+		restart = *rs
+	}
 
 	nodeCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
 	mb := controlplane.NewNodeMailbox()
-	o.nodes[mn.ID] = &nodeHandle{cancel: cancel, done: done, mailbox: mb}
+	h := &nodeHandle{cancel: cancel, done: make(chan struct{}), mailbox: mb, startedAt: o.now()}
+	o.nodes[mn.ID] = h
 	o.mu.Unlock()
 
 	o.eventsMu.Lock()
 	o.mailboxes[mn.ID] = mb
 	o.eventsMu.Unlock()
 
+	runner := o.newRunner(mn, mb)
+
+	if restarting {
+		nlog.Core().Warn(fmt.Sprintf("machine: restarting node %d (%s/%s)", mn.ID, mn.Type, mn.Name),
+			"attempt", restart.failures, "last_error", restart.lastErr)
+	} else {
+		nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",
+			mn.ID, mn.Type, mn.Name))
+	}
+
+	go func() {
+		defer close(h.done)
+		err := runner.Run(nodeCtx)
+		o.nodeExited(mn.ID, h, nodeCtx.Err() != nil, err)
+	}()
+}
+
+// newNodeService builds the service that runs one machine node.
+func (o *Orchestrator) newNodeService(mn panel.MachineNode, mb *controlplane.NodeMailbox) nodeRunner {
 	nodeCfg := o.cfg.ExpandMachineNode(mn.ID, mn.Type)
 
 	perNodeClient := o.client.ForNode(mn.ID)
@@ -160,28 +224,66 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	// the node mailbox + status channel to the Service.
 	nodeID := mn.ID
 	registerFn := func(st chan<- controlplane.StatusChange) *controlplane.NodeMailbox {
-		o.registerNode(nodeID, st)
+		o.registerNode(nodeID, mb, st)
 		return mb
 	}
 
 	cp := controlplane.NewMachinePanelControlPlane(perNodeClient, nodeCfg.Kernel, push, registerFn)
-	svc := service.NewWithControlPlane(nodeCfg, cp)
+	return service.NewWithControlPlane(nodeCfg, cp)
+}
 
-	nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",
-		mn.ID, mn.Type, mn.Name))
+// nodeExited cleans up after a node service returns. stopped reports whether
+// the node's context was cancelled (stopNode or shutdown). Otherwise the node
+// died on its own, and a restart is scheduled for the next rediscover.
+func (o *Orchestrator) nodeExited(nodeID int, h *nodeHandle, stopped bool, err error) {
+	o.unregisterNode(nodeID, h.mailbox)
 
-	go func() {
-		defer close(done)
-		defer o.unregisterNode(mn.ID)
-		if err := svc.Run(nodeCtx); err != nil {
-			nlog.Core().Error("machine node exited with error",
-				"node_id", mn.ID, "error", err)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	// stopNode already dropped this handle, and a newer one may run in its place.
+	if o.nodes[nodeID] != h {
+		if err != nil {
+			nlog.Core().Error("machine node exited with error", "node_id", nodeID, "error", err)
 		}
-	}()
+		return
+	}
+	delete(o.nodes, nodeID)
+	if stopped {
+		if err != nil {
+			nlog.Core().Error("machine node exited with error", "node_id", nodeID, "error", err)
+		}
+		return
+	}
+
+	if err == nil {
+		err = errNodeReturned
+	}
+	rs, ok := o.restarts[nodeID]
+	if !ok || o.now().Sub(h.startedAt) >= restartResetAfter {
+		rs = &restartState{}
+		o.restarts[nodeID] = rs
+	}
+	rs.failures++
+	rs.lastErr = err
+	delay := restartBackoff(rs.failures)
+	rs.notBefore = o.now().Add(delay)
+	nlog.Core().Error("machine node exited, will restart", "node_id", nodeID,
+		"error", err, "failures", rs.failures, "restart_in", delay)
+}
+
+// restartBackoff is the wait before restarting a node after its n-th
+// consecutive exit: restartBackoffInitial doubling up to restartBackoffMax.
+func restartBackoff(failures int) time.Duration {
+	d := restartBackoffInitial
+	for i := 1; i < failures && d < restartBackoffMax; i++ {
+		d *= 2
+	}
+	return min(d, restartBackoffMax)
 }
 
 func (o *Orchestrator) stopNode(nodeID int) {
 	o.mu.Lock()
+	delete(o.restarts, nodeID)
 	h, ok := o.nodes[nodeID]
 	if !ok {
 		o.mu.Unlock()
@@ -190,9 +292,7 @@ func (o *Orchestrator) stopNode(nodeID int) {
 	delete(o.nodes, nodeID)
 	o.mu.Unlock()
 
-	o.eventsMu.Lock()
-	delete(o.mailboxes, nodeID)
-	o.eventsMu.Unlock()
+	o.unregisterNode(nodeID, h.mailbox)
 
 	nlog.Core().Info(fmt.Sprintf("machine: stopping node %d", nodeID))
 	h.cancel()
@@ -228,9 +328,15 @@ func (o *Orchestrator) rediscover(ctx context.Context) {
 		nlog.Core().Warn("machine node discovery failed", "error", err)
 		return
 	}
+	o.reconcile(ctx, nodesResp.Nodes)
+}
 
-	wanted := make(map[int]panel.MachineNode, len(nodesResp.Nodes))
-	for _, n := range nodesResp.Nodes {
+// reconcile stops nodes the panel no longer lists and starts listed nodes
+// that are not running, including ones whose service exited and whose
+// restart backoff has elapsed.
+func (o *Orchestrator) reconcile(ctx context.Context, nodes []panel.MachineNode) {
+	wanted := make(map[int]panel.MachineNode, len(nodes))
+	for _, n := range nodes {
 		wanted[n.ID] = n
 	}
 
@@ -241,14 +347,19 @@ func (o *Orchestrator) rediscover(ctx context.Context) {
 			toRemove = append(toRemove, id)
 		}
 	}
+	for id := range o.restarts {
+		if _, ok := wanted[id]; !ok {
+			delete(o.restarts, id)
+		}
+	}
 	o.mu.Unlock()
 
 	for _, id := range toRemove {
 		o.stopNode(id)
 	}
 
-	for _, n := range nodesResp.Nodes {
-		o.startNode(ctx, n) // no-op if already running
+	for _, n := range nodes {
+		o.startNode(ctx, n) // no-op if already running or backing off
 	}
 }
 
@@ -351,16 +462,23 @@ func (o *Orchestrator) onWSStatus(status panel.WSStatusChange) {
 	}
 }
 
-func (o *Orchestrator) registerNode(nodeID int, st chan<- controlplane.StatusChange) {
+// registerNode and unregisterNode act only while mb is still the node's
+// current mailbox, so a stale generation of a node id cannot touch the
+// registration of the one that replaced it.
+func (o *Orchestrator) registerNode(nodeID int, mb *controlplane.NodeMailbox, st chan<- controlplane.StatusChange) {
 	o.eventsMu.Lock()
-	o.statuses[nodeID] = st
+	if o.mailboxes[nodeID] == mb {
+		o.statuses[nodeID] = st
+	}
 	o.eventsMu.Unlock()
 }
 
-func (o *Orchestrator) unregisterNode(nodeID int) {
+func (o *Orchestrator) unregisterNode(nodeID int, mb *controlplane.NodeMailbox) {
 	o.eventsMu.Lock()
-	delete(o.mailboxes, nodeID)
-	delete(o.statuses, nodeID)
+	if o.mailboxes[nodeID] == mb {
+		delete(o.mailboxes, nodeID)
+		delete(o.statuses, nodeID)
+	}
 	o.eventsMu.Unlock()
 }
 

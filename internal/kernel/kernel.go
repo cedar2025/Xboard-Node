@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/cedar2025/xboard-node/internal/model"
 	"golang.org/x/time/rate"
@@ -93,6 +94,9 @@ type Kernel interface {
 	// SetSpeedLimitFunc configures per-user bandwidth throttling.
 	// The function resolves a user UUID to a *rate.Limiter (nil = unlimited).
 	SetSpeedLimitFunc(fn func(uuid string) *rate.Limiter)
+	// SetUploadLimitFunc configures the per-user upload limiter, separate
+	// from the download one set by SetSpeedLimitFunc (nil = unlimited).
+	SetUploadLimitFunc(fn func(uuid string) *rate.Limiter)
 	// SetDeviceLimitFunc configures per-user device limit gate-keeping.
 	// The function resolves a user UUID to (limit, hasLimit).
 	// Kernels that already gate-keep internally (e.g. xray) may no-op.
@@ -101,6 +105,60 @@ type Kernel interface {
 	UpdateGlobalDevices(users map[int][]string)
 	// ClearGlobalDevices clears the global device state (on WS disconnect).
 	ClearGlobalDevices()
+}
+
+// DeviceEchoWindow bounds how long after a device leaves a node the panel's
+// global device state can still list it only because this node reported it:
+// one tracker tick, one device report interval and one panel push, at their
+// defaults (10s + 30s + 10s), plus slack.
+const DeviceEchoWindow = 60 * time.Second
+
+// AdmitDevice decides whether sourceIP may connect for a user allowed limit
+// devices. local holds the user's IPs online on this node and elsewhere those
+// online on other nodes. An IP already online is kept; a new IP is admitted
+// only while fewer than limit are online, first come first served.
+func AdmitDevice(local map[string]int, elsewhere map[string]bool, sourceIP string, limit int) bool {
+	if local[sourceIP] > 0 || elsewhere[sourceIP] {
+		return true
+	}
+	online := len(local)
+	for ip := range elsewhere {
+		if local[ip] == 0 {
+			online++
+		}
+	}
+	return online < limit
+}
+
+// OverLimitDevices returns the local IPs to disconnect when the user's IPs
+// online on all nodes exceed limit. Two nodes can each admit a device before
+// the panel tells them about the other, and neither knows which came first,
+// so every node keeps the limit lowest-sorting IPs: the nodes agree on the
+// survivors without talking to each other.
+func OverLimitDevices(local map[string]int, elsewhere map[string]bool, limit int) []string {
+	if limit <= 0 || len(local) == 0 {
+		return nil
+	}
+	all := make([]string, 0, len(local)+len(elsewhere))
+	for ip := range local {
+		all = append(all, ip)
+	}
+	for ip := range elsewhere {
+		if local[ip] == 0 {
+			all = append(all, ip)
+		}
+	}
+	if len(all) <= limit {
+		return nil
+	}
+	sort.Strings(all)
+	var over []string
+	for _, ip := range all[limit:] {
+		if local[ip] > 0 {
+			over = append(over, ip)
+		}
+	}
+	return over
 }
 
 // ComputeHash returns a hash of config + user identities that would
@@ -138,7 +196,7 @@ func UserDiff(oldUsers, newUsers []model.UserSpec) (toAdd, toRemove []model.User
 		}
 	}
 	for _, u := range oldUsers {
-		if _, exists := newMap[u.ID]; !exists {
+		if replacement, exists := newMap[u.ID]; !exists || replacement.UUID != u.UUID {
 			toRemove = append(toRemove, u)
 		}
 	}

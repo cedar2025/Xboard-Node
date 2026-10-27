@@ -18,8 +18,11 @@ type SpeedTrackerLogCallback func(msg string)
 type SpeedTracker struct {
 	limiter *Limiter
 	mu      sync.RWMutex
-	buckets map[int]*rate.Limiter // userID → shared rate limiter
-	uuidMap map[string]int        // UUID → userID
+	buckets map[int]*rate.Limiter // userID → download rate limiter
+	// upBuckets: userID → upload rate limiter. A speed limit caps each
+	// direction on its own, so upload never eats into the download budget.
+	upBuckets map[int]*rate.Limiter
+	uuidMap   map[string]int // UUID → userID
 
 	// Fast-path: when no users have a speed limit, GetLimiter returns nil
 	// immediately without any map lookup.
@@ -32,9 +35,10 @@ type SpeedTracker struct {
 // NewSpeedTracker creates a bucket manager for per-user bandwidth throttling.
 func NewSpeedTracker(l *Limiter) *SpeedTracker {
 	return &SpeedTracker{
-		limiter: l,
-		buckets: make(map[int]*rate.Limiter),
-		uuidMap: make(map[string]int),
+		limiter:   l,
+		buckets:   make(map[int]*rate.Limiter),
+		upBuckets: make(map[int]*rate.Limiter),
+		uuidMap:   make(map[string]int),
 	}
 }
 
@@ -65,8 +69,12 @@ func (t *SpeedTracker) UpdateBuckets() {
 				newUUIDMap[user.UUID] = user.ID
 			}
 
-			// Update existing limiter if speed changed
-			if lim, ok := t.buckets[user.ID]; ok {
+			// Update existing limiters if speed changed
+			for _, buckets := range []map[int]*rate.Limiter{t.buckets, t.upBuckets} {
+				lim, ok := buckets[user.ID]
+				if !ok {
+					continue
+				}
 				if user.SpeedLimit > 0 {
 					bytesPerSec := int(user.SpeedLimit) * 1_000_000 / 8
 					burst := bytesPerSec
@@ -76,20 +84,22 @@ func (t *SpeedTracker) UpdateBuckets() {
 					lim.SetLimit(rate.Limit(bytesPerSec))
 					lim.SetBurst(burst)
 				} else {
-					delete(t.buckets, user.ID)
+					delete(buckets, user.ID)
 				}
 			}
 		}
 
 		// Clean up buckets for removed users
-		for id := range t.buckets {
-			if _, ok := activeIDs[id]; !ok {
-				delete(t.buckets, id)
+		for _, buckets := range []map[int]*rate.Limiter{t.buckets, t.upBuckets} {
+			for id := range buckets {
+				if _, ok := activeIDs[id]; !ok {
+					delete(buckets, id)
+				}
 			}
 		}
 
 		t.uuidMap = newUUIDMap
-		t.hasLimits.Store(len(t.buckets) > 0)
+		t.hasLimits.Store(len(t.buckets) > 0 || len(t.upBuckets) > 0)
 	}()
 
 	if t.logFunc != nil {
@@ -97,17 +107,31 @@ func (t *SpeedTracker) UpdateBuckets() {
 	}
 }
 
-// GetLimiter returns the rate limiter for the given user UUID, or nil if
-// no limit applies. Creates limiter on-demand if not exists.
+// GetLimiter returns the download rate limiter for the given user UUID, or
+// nil if no limit applies. Creates limiter on-demand if not exists.
 // Thread-safe.
 func (t *SpeedTracker) GetLimiter(user string) *rate.Limiter {
+	return t.getBucket(user, false)
+}
+
+// GetUploadLimiter returns the upload rate limiter for the given user UUID,
+// or nil if no limit applies. It is separate from the download limiter.
+func (t *SpeedTracker) GetUploadLimiter(user string) *rate.Limiter {
+	return t.getBucket(user, true)
+}
+
+func (t *SpeedTracker) getBucket(user string, upload bool) *rate.Limiter {
 	t.mu.RLock()
+	buckets := t.buckets
+	if upload {
+		buckets = t.upBuckets
+	}
 	uid, exists := t.uuidMap[user]
 	if !exists {
 		t.mu.RUnlock()
 		return nil
 	}
-	if lim, ok := t.buckets[uid]; ok {
+	if lim, ok := buckets[uid]; ok {
 		t.mu.RUnlock()
 		return lim
 	}
@@ -136,11 +160,11 @@ func (t *SpeedTracker) GetLimiter(user string) *rate.Limiter {
 
 	t.mu.Lock()
 	// Double-check after acquiring write lock
-	if existing, ok := t.buckets[uid]; ok {
+	if existing, ok := buckets[uid]; ok {
 		t.mu.Unlock()
 		return existing
 	}
-	t.buckets[uid] = lim
+	buckets[uid] = lim
 	t.hasLimits.Store(true)
 	t.mu.Unlock()
 
@@ -156,5 +180,11 @@ func (t *SpeedTracker) HasLimits() bool {
 func (t *SpeedTracker) LimitedUserCount() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return len(t.buckets)
+	n := len(t.buckets)
+	for id := range t.upBuckets {
+		if _, ok := t.buckets[id]; !ok {
+			n++
+		}
+	}
+	return n
 }

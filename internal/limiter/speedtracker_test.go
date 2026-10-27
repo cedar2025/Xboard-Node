@@ -145,3 +145,40 @@ func TestSpeedTracker_UpdateBuckets_LogCallbackMayCallLimitedUserCount(t *testin
 		t.Fatal("deadlock: UpdateBuckets did not finish (log callback vs RWMutex)")
 	}
 }
+
+func TestSpeedTracker_UploadAndDownloadBucketsAreSeparate(t *testing.T) {
+	l := New()
+	st := NewSpeedTracker(l)
+	l.UpdateUsers([]model.UserSpec{{ID: 1, UUID: "u1", SpeedLimit: 10}})
+	st.UpdateBuckets()
+
+	down, up := st.GetLimiter("u1"), st.GetUploadLimiter("u1")
+	if down == nil || up == nil {
+		t.Fatalf("GetLimiter = %v, GetUploadLimiter = %v, want a bucket each", down, up)
+	}
+	if down == up {
+		t.Fatal("upload and download share one bucket: a speed limit must cap each direction on its own")
+	}
+	want := float64(10 * 1000000 / 8)
+	if float64(up.Limit()) != want || float64(down.Limit()) != want {
+		t.Fatalf("rates up=%v down=%v, want %v each", float64(up.Limit()), float64(down.Limit()), want)
+	}
+	if st.GetUploadLimiter("u1") != up {
+		t.Fatal("GetUploadLimiter returned a new bucket for the same user")
+	}
+
+	l.UpdateUsers([]model.UserSpec{{ID: 1, UUID: "u1", SpeedLimit: 20}})
+	st.UpdateBuckets()
+	if float64(up.Limit()) != float64(20*1000000/8) {
+		t.Fatalf("upload rate after change = %v, want %v", float64(up.Limit()), float64(20*1000000/8))
+	}
+
+	l.UpdateUsers([]model.UserSpec{{ID: 1, UUID: "u1"}})
+	st.UpdateBuckets()
+	if st.GetUploadLimiter("u1") != nil {
+		t.Fatal("upload bucket kept after the speed limit was removed")
+	}
+	if st.LimitedUserCount() != 0 {
+		t.Fatalf("LimitedUserCount = %d, want 0", st.LimitedUserCount())
+	}
+}

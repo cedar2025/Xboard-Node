@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -53,6 +54,8 @@ type SingBox struct {
 	// speedLimitFunc resolves a user UUID to a *rate.Limiter.
 	// Set once by SetSpeedLimitFunc and forwarded to every new ConnTracker.
 	speedLimitFunc func(string) *rate.Limiter
+	// uploadLimitFunc resolves a user UUID to their upload limiter.
+	uploadLimitFunc func(string) *rate.Limiter
 
 	// deviceLimitFunc resolves a user UUID to (limit, hasLimit) for gate-keeping.
 	// Set once by SetDeviceLimitFunc and forwarded to every new ConnTracker.
@@ -141,9 +144,13 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 
 	// Fresh tracker on full restart.
 	s.connTracker = NewConnTracker(0)
+	s.connTracker.SetManagedInbound(inboundTag(nodeConfig))
 	s.connTracker.SetUserMap(buildUserMap(users))
 	if s.speedLimitFunc != nil {
 		s.connTracker.SetSpeedLimitFunc(s.speedLimitFunc)
+	}
+	if s.uploadLimitFunc != nil {
+		s.connTracker.SetUploadLimitFunc(s.uploadLimitFunc)
 	}
 	if s.deviceLimitFunc != nil {
 		s.connTracker.SetDeviceLimitFunc(s.deviceLimitFunc)
@@ -304,6 +311,7 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 	// Trackers remain registered on the Router (which survives ReloadUsers).
 	// Only update the user map — do NOT re-register or traffic is double-counted.
 	if s.connTracker != nil {
+		s.connTracker.SetManagedInbound(inboundTag(nodeConfig))
 		s.connTracker.SetUserMap(buildUserMap(users))
 	}
 
@@ -392,6 +400,16 @@ func (s *SingBox) SetSpeedLimitFunc(fn func(uuid string) *rate.Limiter) {
 	s.speedLimitFunc = fn
 	if s.connTracker != nil {
 		s.connTracker.SetSpeedLimitFunc(fn)
+	}
+}
+
+// SetUploadLimitFunc configures the per-user upload limiter.
+func (s *SingBox) SetUploadLimitFunc(fn func(uuid string) *rate.Limiter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.uploadLimitFunc = fn
+	if s.connTracker != nil {
+		s.connTracker.SetUploadLimitFunc(fn)
 	}
 }
 
@@ -645,13 +663,15 @@ func (s *SingBox) CloseUserConnections(_ context.Context, uuid string) error {
 	return nil
 }
 
-// buildUserMap creates a UUID→userID mapping used by ConnTracker to attribute
-// connections to the correct user. All sing-box protocols use the user's UUID
-// as the inbound name/username, so this covers every protocol.
+// buildUserMap maps each identity an inbound reports as metadata.User to the
+// user ID, so ConnTracker can attribute connections and reject removed users.
+// Every protocol uses the user's UUID as name/username except naive, which
+// authenticates with the numeric user ID.
 func buildUserMap(users []model.UserSpec) map[string]int {
-	m := make(map[string]int, len(users))
+	m := make(map[string]int, 2*len(users))
 	for _, u := range users {
 		m[u.UUID] = u.ID
+		m[strconv.Itoa(u.ID)] = u.ID
 	}
 	return m
 }

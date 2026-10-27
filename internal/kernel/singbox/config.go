@@ -429,9 +429,14 @@ func mergeCustomSingboxRoute(cfg M, customRoute map[string]any) {
 	}
 }
 
+// inboundTag is the tag of the node's single inbound.
+func inboundTag(nc *model.NodeSpec) string {
+	return nc.Protocol + "-in"
+}
+
 func buildInbound(nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLSCert) M {
 	base := M{
-		"tag":         nc.Protocol + "-in",
+		"tag":         inboundTag(nc),
 		"listen":      "::",
 		"listen_port": nc.ServerPort,
 	}
