@@ -1,5 +1,7 @@
 # XNode
 
+[简体中文说明](README.zh-CN.md) · English
+
 Fork of xboard-node for the official [Xboard](https://github.com/cedar2025/Xboard) panel. Supports `sing-box` / `xray-core` dual kernels.
 
 > **Disclaimer**: This project is for educational and learning purposes only.
