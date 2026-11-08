@@ -10,6 +10,12 @@
 # ── Multiple instances ──
 # kernel:
 #   type: "singbox"
+#   # 本地 Trojan TCP+TLS fallback；面板热更新不会覆盖。
+#   # 目标需由本机 HTTP 服务监听，h2 目标需支持 h2c。
+#   fallbacks:
+#     - dest: "127.0.0.1:8080"
+#     - alpn: "h2"
+#       dest: "127.0.0.1:8082"
 # log:
 #   level: "info"
 # instances:

@@ -1,6 +1,6 @@
-# xboard-node
+# XNode
 
-Node backend for [Xboard](https://github.com/cedar2025/Xboard). Supports `sing-box` / `xray-core` dual kernels.
+Fork of xboard-node for the official [Xboard](https://github.com/cedar2025/Xboard) panel. Supports `sing-box` / `xray-core` dual kernels.
 
 > **Disclaimer**: This project is for educational and learning purposes only.
 
@@ -19,28 +19,26 @@ Node backend for [Xboard](https://github.com/cedar2025/Xboard). Supports `sing-b
 ```bash
 docker run -d --restart=always --network=host \
   -e apiHost=https://panel.com -e apiKey=TOKEN -e nodeID=1 \
-  ghcr.io/cedar2025/xboard-node:latest
+  ghcr.io/pipi-happy/xnode:latest
 ```
 
-### Docker Compose
-
-```bash
-git clone -b compose --depth 1 https://github.com/cedar2025/xboard-node.git
-cd xboard-node
-vim config/config.yml   # set panel.url / token / node_id
-docker compose up -d
-```
+The fork image is published by this repository's CI. Mount a local `config.yml` into
+`/etc/xboard-node/config.yml` when using `kernel.fallbacks`.
 
 ### Installer (Linux systemd)
 
 ```bash
 # Node mode
-curl -fsSL https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/PiPi-happy/XNode/dev/install.sh | \
   sudo bash -s -- --mode node --panel https://panel.example.com --token TOKEN --node-id 1
 
 # Machine mode
-curl -fsSL https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/PiPi-happy/XNode/dev/install.sh | \
   sudo bash -s -- --mode machine --panel https://panel.example.com --token TOKEN --machine-id 1
+```
+
+The installer downloads this fork's `dev` release by default. For reproducible
+deployments, pass `--version <release-tag>` after publishing a tagged release.
 
 ## xbctl
 
@@ -58,6 +56,21 @@ xbctl service restart
 ## Configuration
 
 Legacy single-panel config is fully compatible. Appending bindings auto-migrates to `instances` format. See `config.yml.example`.
+
+Local Trojan TCP+TLS fallback is configured only in `config.yml`, never from panel data:
+
+```yaml
+kernel:
+  type: xray # or singbox
+  fallbacks:
+    - dest: "127.0.0.1:8080"
+    - alpn: h2
+      dest: "127.0.0.1:8082"
+```
+
+Run a local HTTP/1.1 service on 8080 and an h2c-capable service on 8082. The
+fallback rules survive compatible panel updates. Switching the node away from
+Trojan TCP+TLS is rejected while local fallbacks are enabled. See [PRD](docs/PRD.md).
 
 ## Extensions
 

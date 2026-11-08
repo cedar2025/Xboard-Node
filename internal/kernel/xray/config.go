@@ -81,7 +81,38 @@ func buildConfig(kcfg config.KernelConfig, nc *model.NodeSpec, users []model.Use
 	cfg["routing"] = buildRouting(nc.Routes, nc.CustomRouteRules, mergeRouteList(nc.CustomRoutes, kcfg.CustomRoute))
 
 	mergeCustomXray(cfg, kcfg)
+	if inbound != nil && len(kcfg.Fallbacks) > 0 && nc.Protocol == "trojan" {
+		fallbacks := make([]M, 0, len(kcfg.Fallbacks))
+		alpn := make([]string, 0, len(kcfg.Fallbacks))
+		hasDefault := false
+		for _, fb := range kcfg.Fallbacks {
+			item := M{"dest": fb.Dest}
+			if fb.ALPN != "" {
+				item["alpn"] = fb.ALPN
+				alpn = append(alpn, fb.ALPN)
+			} else {
+				hasDefault = true
+			}
+			fallbacks = append(fallbacks, item)
+		}
+		inbound["settings"].(M)["fallbacks"] = fallbacks
+		if len(alpn) > 0 {
+			if hasDefault && !containsALPN(alpn, "http/1.1") {
+				alpn = append(alpn, "http/1.1")
+			}
+			inbound["streamSettings"].(M)["tlsSettings"].(M)["alpn"] = alpn
+		}
+	}
 	return cfg
+}
+
+func containsALPN(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // outboundConfigToXray converts a structured OutboundConfig (from the panel)
@@ -298,8 +329,9 @@ func buildTrojan(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.T
 	// we should enable a default TLS config to ensure the inbound can start.
 	ss, _ := base["streamSettings"].(M)
 	if security, ok := ss["security"].(string); !ok || (security != "tls" && security != "reality") {
-		nc.TLS = 1 // Force internal state to trigger TLS build in applyStreamSettings
-		applyStreamSettings(base, nc, tc)
+		withTLS := *nc
+		withTLS.TLS = 1
+		applyStreamSettings(base, &withTLS, tc)
 	}
 
 	return base

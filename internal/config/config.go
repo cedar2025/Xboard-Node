@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,14 +20,14 @@ import (
 )
 
 type Config struct {
-	InstanceID string `yaml:"-"`
-	Panel   PanelConfig   `yaml:"panel"`
-	Node    NodeConfig    `yaml:"node"`
-	Kernel  KernelConfig  `yaml:"kernel"`
-	Cert    CertConfig    `yaml:"cert"`
-	Log     LogConfig     `yaml:"log"`
-	Runtime RuntimeConfig `yaml:"runtime"`
-	WS      WSConfig      `yaml:"ws"`
+	InstanceID string        `yaml:"-"`
+	Panel      PanelConfig   `yaml:"panel"`
+	Node       NodeConfig    `yaml:"node"`
+	Kernel     KernelConfig  `yaml:"kernel"`
+	Cert       CertConfig    `yaml:"cert"`
+	Log        LogConfig     `yaml:"log"`
+	Runtime    RuntimeConfig `yaml:"runtime"`
+	WS         WSConfig      `yaml:"ws"`
 	// Standalone enables a local-only node that never contacts the panel.
 	Standalone *StandaloneConfig `yaml:"standalone,omitempty"`
 	// HealthPort enables a lightweight HTTP health-check endpoint on the
@@ -65,10 +66,37 @@ type NodeEntry struct {
 // KernelOverride holds the subset of KernelConfig that is useful to override
 // per-node. Only non-zero fields replace the global value.
 type KernelOverride struct {
-	ConfigDir    string `yaml:"config_dir,omitempty"`
-	GeoDataDir   string `yaml:"geo_data_dir,omitempty"`
-	LogLevel     string `yaml:"log_level,omitempty"`
-	CustomConfig string `yaml:"custom_config,omitempty"`
+	ConfigDir    string           `yaml:"config_dir,omitempty"`
+	GeoDataDir   string           `yaml:"geo_data_dir,omitempty"`
+	LogLevel     string           `yaml:"log_level,omitempty"`
+	CustomConfig string           `yaml:"custom_config,omitempty"`
+	Fallbacks    []FallbackConfig `yaml:"fallbacks,omitempty"`
+}
+
+// FallbackConfig is local-only. It is never populated from panel responses.
+// Dest uses an explicit host:port so both kernels resolve the same target.
+type FallbackConfig struct {
+	ALPN string `yaml:"alpn,omitempty"`
+	Dest string `yaml:"dest"`
+}
+
+func validateFallbacks(fallbacks []FallbackConfig) error {
+	seen := make(map[string]bool, len(fallbacks))
+	for i, fb := range fallbacks {
+		if seen[fb.ALPN] {
+			return fmt.Errorf("kernel.fallbacks[%d]: duplicate alpn %q", i, fb.ALPN)
+		}
+		seen[fb.ALPN] = true
+		host, portText, err := net.SplitHostPort(fb.Dest)
+		if err != nil || host == "" {
+			return fmt.Errorf("kernel.fallbacks[%d].dest must be host:port", i)
+		}
+		port, err := strconv.Atoi(portText)
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("kernel.fallbacks[%d].dest has invalid port", i)
+		}
+	}
+	return nil
 }
 
 // RuntimeConfig tunes Go runtime memory behaviour.
@@ -142,6 +170,8 @@ type KernelConfig struct {
 	// customization of dns, outbounds, endpoints, route, experimental, etc.
 	// Compatible with V2bX OriginalPath format.
 	CustomConfig string `yaml:"custom_config"`
+	// Fallbacks are applied to Trojan TCP+TLS inbounds after panel updates.
+	Fallbacks []FallbackConfig `yaml:"fallbacks,omitempty"`
 }
 
 type CertConfig struct {
@@ -507,6 +537,9 @@ func (c *Config) inheritFrom(parent *Config) {
 	if c.Kernel.CustomConfig == "" {
 		c.Kernel.CustomConfig = parent.Kernel.CustomConfig
 	}
+	if c.Kernel.Fallbacks == nil {
+		c.Kernel.Fallbacks = parent.Kernel.Fallbacks
+	}
 	if len(c.Kernel.CustomOutbound) == 0 {
 		c.Kernel.CustomOutbound = parent.Kernel.CustomOutbound
 	}
@@ -717,12 +750,20 @@ func (c *Config) validate() error {
 			if n.NodeID <= 0 {
 				return fmt.Errorf("nodes[%d].node_id must be positive", i)
 			}
+			if n.Kernel != nil {
+				if err := validateFallbacks(n.Kernel.Fallbacks); err != nil {
+					return fmt.Errorf("nodes[%d]: %w", i, err)
+				}
+			}
 		}
 	}
 	switch c.Kernel.Type {
 	case "singbox", "xray":
 	default:
 		return fmt.Errorf("kernel.type must be 'singbox' or 'xray', got '%s'", c.Kernel.Type)
+	}
+	if err := validateFallbacks(c.Kernel.Fallbacks); err != nil {
+		return err
 	}
 	if c.Cert.AutoTLS && c.Cert.Domain == "" {
 		return fmt.Errorf("cert.domain is required when cert.auto_tls is enabled")
@@ -770,6 +811,9 @@ func (c *Config) ExpandNodes() []*Config {
 			}
 			if entry.Kernel.CustomConfig != "" {
 				nodeCfg.Kernel.CustomConfig = entry.Kernel.CustomConfig
+			}
+			if entry.Kernel.Fallbacks != nil {
+				nodeCfg.Kernel.Fallbacks = entry.Kernel.Fallbacks
 			}
 		} else {
 			// Auto-derive a unique config_dir per node to avoid conflicts.

@@ -74,6 +74,58 @@ func buildConfig(kcfg config.KernelConfig, nc *model.NodeSpec, users []model.Use
 	}
 
 	mergeCustomSingbox(cfg, kcfg)
+	if inbound != nil && len(kcfg.Fallbacks) > 0 && nc.Protocol == "trojan" {
+		alpn := M{}
+		advertised := make([]string, 0, len(kcfg.Fallbacks))
+		hasDefault := false
+		tag := "_xnode_fallback_direct"
+		occupied := make(map[string]bool)
+		for _, outbound := range cfg["outbounds"].([]M) {
+			if value, ok := outbound["tag"].(string); ok {
+				occupied[value] = true
+			}
+		}
+		for occupied[tag] {
+			tag += "_"
+		}
+		cfg["outbounds"] = append(cfg["outbounds"].([]M), M{"type": "direct", "tag": tag})
+		route := cfg["route"].(M)
+		rules := route["rules"].([]M)
+		fallbackRules := make([]M, 0, len(kcfg.Fallbacks))
+		for _, fb := range kcfg.Fallbacks {
+			host, portText, _ := net.SplitHostPort(fb.Dest) // validated when local config is loaded
+			port, _ := strconv.Atoi(portText)
+			target := M{"server": host, "server_port": port}
+			rule := M{"inbound": []string{"trojan-in"}, "port": []int{port}, "outbound": tag}
+			if net.ParseIP(host) != nil {
+				rule["ip_cidr"] = []string{host}
+			} else {
+				rule["domain"] = []string{host}
+			}
+			fallbackRules = append(fallbackRules, rule)
+			if fb.ALPN == "" {
+				inbound["fallback"] = target
+				hasDefault = true
+			} else {
+				alpn[fb.ALPN] = target
+				advertised = append(advertised, fb.ALPN)
+			}
+		}
+		if len(alpn) > 0 {
+			inbound["fallback_for_alpn"] = alpn
+		}
+		if len(advertised) > 0 {
+			if hasDefault {
+				if _, ok := alpn["http/1.1"]; !ok {
+					alpn["http/1.1"] = inbound["fallback"]
+					advertised = append(advertised, "http/1.1")
+				}
+			}
+			inbound["fallback_for_alpn"] = alpn
+			inbound["tls"].(M)["alpn"] = advertised
+		}
+		route["rules"] = append(fallbackRules, rules...)
+	}
 	return cfg
 }
 
