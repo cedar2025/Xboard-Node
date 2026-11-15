@@ -572,3 +572,41 @@ func TestExtractECHServerKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildConfig_Hysteria_ECH(t *testing.T) {
+	// Raw base64 ECH KEYS payload, as delivered by the panel
+	// (tls_settings.ech.key, no PEM armor).
+	rawKeys := base64.StdEncoding.EncodeToString([]byte{0x00, 0x20, 0xDE, 0xAD, 0xBE, 0xEF})
+
+	nc := &panel.NodeConfig{
+		Protocol:   "hysteria",
+		ServerPort: 443,
+		Version:    2,
+		TLSSettings: map[string]interface{}{
+			"ech": map[string]interface{}{
+				"enabled": true,
+				"key":     rawKeys,
+			},
+		},
+	}
+	cfg := buildConfig(testKernelCfg, testNodeSpec(nc), testUsers, kernel.TLSCert{CertPEM: []byte("CERT"), KeyPEM: []byte("KEY")})
+	tlsSettings := cfg["inbounds"].([]M)[0]["streamSettings"].(M)["tlsSettings"].(M)
+	if got := tlsSettings["echServerKeys"]; got != rawKeys {
+		t.Errorf("echServerKeys = %v, want %q", got, rawKeys)
+	}
+
+	// ECH disabled: the inbound still builds, without echServerKeys.
+	nc2 := &panel.NodeConfig{
+		Protocol:   "hysteria",
+		ServerPort: 443,
+		Version:    2,
+		TLSSettings: map[string]interface{}{
+			"ech": map[string]interface{}{"enabled": false, "key": rawKeys},
+		},
+	}
+	cfg2 := buildConfig(testKernelCfg, testNodeSpec(nc2), testUsers, kernel.TLSCert{CertPEM: []byte("CERT"), KeyPEM: []byte("KEY")})
+	tlsSettings2 := cfg2["inbounds"].([]M)[0]["streamSettings"].(M)["tlsSettings"].(M)
+	if _, ok := tlsSettings2["echServerKeys"]; ok {
+		t.Errorf("echServerKeys should be absent when ECH is disabled")
+	}
+}

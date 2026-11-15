@@ -446,10 +446,16 @@ func buildHysteria(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel
 			"certificate": []string{string(tc.CertPEM)},
 			"key":         []string{string(tc.KeyPEM)},
 		}
-		ss["tlsSettings"] = M{
+		tlsSettings := M{
 			"certificates": []M{tlsCert},
 			"alpn":         []string{"h3"},
 		}
+		// ECH server-side: same static key as the VLESS/TLS path
+		// (extractECHServerKeys reads tls_settings.ech.key / key_path).
+		if echKeys := extractECHServerKeys(nc.TLSSettings); echKeys != "" {
+			tlsSettings["echServerKeys"] = echKeys
+		}
+		ss["tlsSettings"] = tlsSettings
 	} else {
 		nlog.Core().Warn("hysteria requires TLS certificate files; configure cert_mode (self, file, http, dns, or content)")
 	}
