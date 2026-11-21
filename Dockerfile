@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 RUN apk add --no-cache git
 
@@ -33,7 +33,7 @@ WORKDIR /etc/xboard-node
 #     -e apiHost=https://panel.example.com \
 #     -e apiKey=YOUR_TOKEN \
 #     -e nodeID=1 \
-#     ghcr.io/cedar2025/xboard-node:latest
+#     ghcr.io/qiuzi/xboard-node:latest
 #
 # Supported env vars:
 #   apiHost  / API_HOST    → panel URL
