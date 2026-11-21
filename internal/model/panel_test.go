@@ -21,7 +21,7 @@ func TestNodeSpecFromPanelValidated(t *testing.T) {
 				Action: panel.RouteAction{Type: "route", Target: "proxy"},
 				Match:  panel.RouteMatch{DomainSuffixes: []string{"example.com"}},
 			}},
-		}, config.KernelConfig{Type: "singbox"})
+		}, config.KernelConfig{Type: "xray"})
 		if err != nil {
 			t.Fatalf("NodeSpecFromPanelValidated: %v", err)
 		}
@@ -37,7 +37,7 @@ func TestNodeSpecFromPanelValidated(t *testing.T) {
 			CustomOutbounds: []panel.OutboundConfig{{
 				Tag: "proxy", Protocol: "socks", ProxyTag: "missing", Settings: map[string]any{"server": "2.2.2.2", "server_port": 1080},
 			}},
-		}, config.KernelConfig{Type: "singbox"})
+		}, config.KernelConfig{Type: "xray"})
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -73,7 +73,7 @@ func TestNodeSpecFromPanelValidated(t *testing.T) {
 				Action: panel.RouteAction{Type: "route", Target: "missing"},
 				Match:  panel.RouteMatch{DomainSuffixes: []string{"example.com"}},
 			}},
-		}, config.KernelConfig{Type: "singbox"})
+		}, config.KernelConfig{Type: "xray"})
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}

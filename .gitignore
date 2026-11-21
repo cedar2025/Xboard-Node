@@ -6,9 +6,6 @@
 # Config files (may contain secrets)
 config.yml
 
-# Generated sing-box config
-singbox.json
-
 # IDE
 .idea/
 .vscode/
@@ -25,7 +22,6 @@ config.json
 benchmark/
 third_party
 bench-results
-internal/kernel/singbox/config_bench_test.go
 internal/kernel/xray/config_bench_test.go
 internal/service/service_bench_test.go
 internal/tracker/tracker_bench_test.go

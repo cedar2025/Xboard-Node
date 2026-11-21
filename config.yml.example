@@ -9,7 +9,7 @@
 
 # ── Multiple instances ──
 # kernel:
-#   type: "singbox"
+#   type: "xray"
 # log:
 #   level: "info"
 # instances:

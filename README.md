@@ -1,6 +1,6 @@
 # xboard-node
 
-Node backend for [Xboard](https://github.com/cedar2025/Xboard). Supports `sing-box` / `xray-core` dual kernels.
+Node backend for [Xboard](https://github.com/cedar2025/Xboard). Supports the `xray-core` kernel.
 
 > **Disclaimer**: This project is for educational and learning purposes only.
 

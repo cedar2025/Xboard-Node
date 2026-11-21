@@ -19,7 +19,6 @@ import (
 	"github.com/cedar2025/xboard-node/internal/config"
 	"github.com/cedar2025/xboard-node/internal/controlplane"
 	"github.com/cedar2025/xboard-node/internal/kernel"
-	"github.com/cedar2025/xboard-node/internal/kernel/singbox"
 	"github.com/cedar2025/xboard-node/internal/kernel/xray"
 	"github.com/cedar2025/xboard-node/internal/limiter"
 	"github.com/cedar2025/xboard-node/internal/model"
@@ -141,13 +140,11 @@ func newService(cfg *config.Config, cp controlplane.ControlPlane) *Service {
 
 	var k kernel.Kernel
 	switch cfg.Kernel.Type {
-	case "singbox":
-		k = singbox.New(cfg.Kernel)
 	case "xray":
 		k = xray.New(cfg.Kernel)
 	default:
-		nlog.Core().Warn("unsupported kernel type, defaulting to sing-box", "type", cfg.Kernel.Type)
-		k = singbox.New(cfg.Kernel)
+		nlog.Core().Warn("unsupported kernel type, defaulting to xray", "type", cfg.Kernel.Type)
+		k = xray.New(cfg.Kernel)
 	}
 
 	l := limiter.New()

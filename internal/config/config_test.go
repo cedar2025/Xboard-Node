@@ -25,7 +25,7 @@ panel:
   node_id: 5
   node_type: "v2ray"
 kernel:
-  type: singbox
+  type: xray
   log_level: warn
 log:
   level: debug
@@ -46,7 +46,7 @@ log:
 	if cfg.Panel.NodeType != "v2ray" {
 		t.Errorf("node_type: got %q", cfg.Panel.NodeType)
 	}
-	if cfg.Kernel.Type != "singbox" {
+	if cfg.Kernel.Type != "xray" {
 		t.Errorf("kernel.type: got %q", cfg.Kernel.Type)
 	}
 	if cfg.Log.Level != "debug" {
@@ -65,8 +65,8 @@ panel:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Kernel.Type != "singbox" {
-		t.Errorf("default kernel.type: got %q, want singbox", cfg.Kernel.Type)
+	if cfg.Kernel.Type != "xray" {
+		t.Errorf("default kernel.type: got %q, want xray", cfg.Kernel.Type)
 	}
 	// config_dir should default to the directory containing the config file.
 	expectedDir := filepath.Dir(path)
@@ -319,7 +319,7 @@ standalone:
     protocol: "trojan"
     server_port: 443
 kernel:
-  type: singbox
+  type: xray
 `)
 	_, err := Load(path)
 	if err == nil {
@@ -362,14 +362,14 @@ instances:
       token_env: "PANEL_A_TOKEN"
       node_id: 1
     kernel:
-      type: singbox
+      type: xray
   - panel:
       url: "https://panel-b.example.com"
     machine:
       machine_id: 2
       token_env: "PANEL_B_MACHINE_TOKEN"
     kernel:
-      type: singbox
+      type: xray
 `)
 	t.Setenv("PANEL_A_TOKEN", "token-a")
 	t.Setenv("PANEL_B_MACHINE_TOKEN", "token-b")

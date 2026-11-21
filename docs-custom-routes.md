@@ -53,12 +53,12 @@
 
 ## Kernel Compatibility
 
-| Feature | Xray | Sing-box |
-|---------|------|----------|
-| All match conditions | ✅ | ✅ |
-| direct / block / route | ✅ | ✅ |
+| Feature | Supported |
+|---------|-----------|
+| All match conditions | ✅ |
+| direct / block / route | ✅ |
 
 ## Best Practices
 
-- **Prefer** `custom_route_rules`: cross-kernel compatible, panel-managed
+- **Prefer** `custom_route_rules`: panel-managed
 - **Use** `custom_routes` only: when native features are needed (e.g., load balancing)

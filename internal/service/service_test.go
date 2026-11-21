@@ -200,7 +200,7 @@ func TestApplyUserDeltaAddPreparesLimiterBeforeKernelUpdate(t *testing.T) {
 
 
 func TestValidateNodeRuntimeRejectsUnsupportedDNSProvider(t *testing.T) {
-	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
+	cfg := &config.Config{Kernel: config.KernelConfig{Type: "xray"}}
 	err := validateNodeRuntime(cfg, []string{"http"}, &model.NodeSpec{
 		Protocol: "http",
 		CertConfig: &config.CertConfig{
@@ -221,7 +221,7 @@ func TestValidateNodeRuntimeRejectsUnsupportedDNSProvider(t *testing.T) {
 }
 
 func TestValidateNodeRuntimeAllowsSelfManagedTLSBeforeFilesExist(t *testing.T) {
-	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
+	cfg := &config.Config{Kernel: config.KernelConfig{Type: "xray"}}
 	err := validateNodeRuntime(cfg, []string{"anytls", "hysteria"}, &model.NodeSpec{
 		Protocol: "anytls",
 		CertConfig: &config.CertConfig{
@@ -234,8 +234,8 @@ func TestValidateNodeRuntimeAllowsSelfManagedTLSBeforeFilesExist(t *testing.T) {
 	}
 }
 
-func TestValidateNodeRuntimeAllowsSingboxRealityWithRequiredFields(t *testing.T) {
-	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
+func TestValidateNodeRuntimeAllowsXrayRealityWithRequiredFields(t *testing.T) {
+	cfg := &config.Config{Kernel: config.KernelConfig{Type: "xray"}}
 	err := validateNodeRuntime(cfg, []string{"vless"}, &model.NodeSpec{
 		Protocol: "vless",
 		TLS:      2,
@@ -245,12 +245,12 @@ func TestValidateNodeRuntimeAllowsSingboxRealityWithRequiredFields(t *testing.T)
 		},
 	}, kernel.TLSCert{CertPEM: []byte("CERT"), KeyPEM: []byte("KEY")})
 	if err != nil {
-		t.Fatalf("expected sing-box reality validation to pass, got %v", err)
+		t.Fatalf("expected xray reality validation to pass, got %v", err)
 	}
 }
 
 func TestValidateNodeRuntimeRejectsRealityWithoutTLSSettings(t *testing.T) {
-	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
+	cfg := &config.Config{Kernel: config.KernelConfig{Type: "xray"}}
 	err := validateNodeRuntime(cfg, []string{"vless"}, &model.NodeSpec{
 		Protocol: "vless",
 		TLS:      2,
@@ -264,7 +264,7 @@ func TestValidateNodeRuntimeRejectsRealityWithoutTLSSettings(t *testing.T) {
 }
 
 func TestValidateNodeRuntimeRejectsRealityWithoutPrivateKey(t *testing.T) {
-	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
+	cfg := &config.Config{Kernel: config.KernelConfig{Type: "xray"}}
 	err := validateNodeRuntime(cfg, []string{"vless"}, &model.NodeSpec{
 		Protocol: "vless",
 		TLS:      2,
@@ -281,7 +281,7 @@ func TestValidateNodeRuntimeRejectsRealityWithoutPrivateKey(t *testing.T) {
 }
 
 func TestValidateNodeRuntimeRejectsRealityWithoutServerNameOrDest(t *testing.T) {
-	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
+	cfg := &config.Config{Kernel: config.KernelConfig{Type: "xray"}}
 	err := validateNodeRuntime(cfg, []string{"vless"}, &model.NodeSpec{
 		Protocol: "vless",
 		TLS:      2,

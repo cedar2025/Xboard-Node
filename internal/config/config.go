@@ -118,19 +118,18 @@ type WSConfig struct {
 }
 
 type KernelConfig struct {
-	Type      string `yaml:"type"` // "singbox" or "xray"
+	Type      string `yaml:"type"` // "xray"
 	ConfigDir string `yaml:"config_dir"`
 	LogLevel  string `yaml:"log_level"`
 
 	// GeoDataDir is the directory that contains GeoIP/GeoSite database files.
-	// For sing-box: geoip.db and geosite.db (geoip2-format).
-	// For xray:     geoip.dat and geosite.dat.
+	// For xray: geoip.dat and geosite.dat.
 	// Defaults to config_dir when empty. You only need to set this if your
 	// geo database files live somewhere other than config_dir.
 	GeoDataDir string `yaml:"geo_data_dir"`
 
 	// CustomOutbound adds outbound entries to the generated kernel config.
-	// Each item is a raw kernel-native outbound object (sing-box or xray format).
+	// Each item is a raw kernel-native outbound object (xray format).
 	CustomOutbound []map[string]any `yaml:"custom_outbound"`
 
 	// CustomRoute adds route rules to the generated kernel config.
@@ -217,7 +216,7 @@ func LoadRoot(path string) (*RootConfig, error) {
 	}
 
 	// Derive default base directory from the config file's location so that
-	// data (certs, sing-box cache, …) lives next to the config file when
+	// data (certs, cache, …) lives next to the config file when
 	// config_dir is not explicitly set. This makes non-root / dev deployments
 	// work without any extra configuration.
 	baseDir := configBaseDir(path)
@@ -299,7 +298,7 @@ func (rc *RootConfig) assignInstanceIDs() error {
 
 // configBaseDir resolves the canonical base directory from the config file path.
 // This directory is used as the default for config_dir when not explicitly set,
-// so that data (certs, sing-box cache, …) lives next to the config file.
+// so that data (certs, cache, …) lives next to the config file.
 func configBaseDir(configPath string) string {
 	abs, err := filepath.Abs(configPath)
 	if err != nil {
@@ -555,7 +554,7 @@ func (c *Config) inheritFrom(parent *Config) {
 
 func (c *Config) setDefaultsFrom(baseDir string) {
 	if c.Kernel.Type == "" {
-		c.Kernel.Type = "singbox"
+		c.Kernel.Type = "xray"
 	}
 	if c.Kernel.ConfigDir == "" {
 		c.Kernel.ConfigDir = baseDir
@@ -720,9 +719,9 @@ func (c *Config) validate() error {
 		}
 	}
 	switch c.Kernel.Type {
-	case "singbox", "xray":
+	case "xray":
 	default:
-		return fmt.Errorf("kernel.type must be 'singbox' or 'xray', got '%s'", c.Kernel.Type)
+		return fmt.Errorf("kernel.type must be 'xray', got '%s'", c.Kernel.Type)
 	}
 	if c.Cert.AutoTLS && c.Cert.Domain == "" {
 		return fmt.Errorf("cert.domain is required when cert.auto_tls is enabled")

@@ -183,8 +183,8 @@ func mergeCustomXrayRouting(cfg M, customRouting map[string]any) {
 	}
 }
 
-func xrayLogLevel(singboxLevel string) string {
-	switch singboxLevel {
+func xrayLogLevel(level string) string {
+	switch level {
 	case "trace", "debug":
 		return "debug"
 	case "info":
