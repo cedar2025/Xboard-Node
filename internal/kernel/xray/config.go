@@ -417,7 +417,10 @@ func buildHysteria(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel
 			"email": userEmail(u.ID),
 		})
 	}
-	base["settings"] = M{"clients": clients}
+	// New core (upstream main) requires "version": 2 in the hysteria
+	// inbound SETTINGS; without it startup fails with "version != 2".
+	// The guard above guarantees nc.Version == 2 here.
+	base["settings"] = M{"version": nc.Version, "clients": clients}
 
 	ss := M{
 		"network": "hysteria",
