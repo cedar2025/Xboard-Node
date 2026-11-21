@@ -10,6 +10,7 @@ import (
 
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
+	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/include"
 	singLog "github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
@@ -230,13 +231,15 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 
 	nopFactory := singLog.NewNOPFactory()
 
-	// Configuration hash check for inbound reconstruction
+	// A Hysteria2 credential change can be applied to the running listener.
+	// Preserve the previous reload semantics for the other inbound types.
 	tlsChanged := !bytes.Equal(s.tls.CertPEM, tls.CertPEM) || !bytes.Equal(s.tls.KeyPEM, tls.KeyPEM)
-	configChanged := tlsChanged || s.nodeConfig == nil || kernel.ComputeHash(nodeConfig, users) != kernel.ComputeHash(s.nodeConfig, s.users)
+	configChanged := tlsChanged || s.nodeConfig == nil || kernel.ComputeHash(nodeConfig, nil) != kernel.ComputeHash(s.nodeConfig, nil)
+	usersChanged := kernel.ComputeHash(nil, users) != kernel.ComputeHash(nil, s.users)
 
 	for _, inb := range opts.Inbounds {
 		tag := inb.Tag
-		if !configChanged {
+		if !configChanged && (!usersChanged || inb.Type == C.TypeHysteria2) {
 			if existing, ok := im.Get(tag); ok && existing.Type() == inb.Type {
 				var err error
 				switch v := existing.(type) {
@@ -635,13 +638,18 @@ func (s *SingBox) CloseConnection(_ context.Context, connID string) error {
 	return nil
 }
 
-// CloseUserConnections terminates all connections for a user UUID.
+// CloseUserConnections kicks the user on inbounds that own a session registry.
 func (s *SingBox) CloseUserConnections(_ context.Context, uuid string) error {
-	ct := s.connTrackerSafe()
-	if ct == nil {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.box == nil {
 		return nil
 	}
-	ct.CloseByUUID(uuid)
+	for _, inbound := range s.box.Inbound().Inbounds() {
+		if revoker, ok := inbound.(interface{ CloseUserSessions(string) }); ok {
+			revoker.CloseUserSessions(uuid)
+		}
+	}
 	return nil
 }
 

@@ -454,14 +454,6 @@ func (t *ConnTracker) CloseByID(id string) bool {
 	return true
 }
 
-// CloseByUUID force-closes ALL connections for a given user UUID.
-func (t *ConnTracker) CloseByUUID(uuid string) int {
-	// This is a no-op for now — sing-box doesn't expose per-user connection
-	// kill easily. The kernel's RemoveUsers removes the inbound user which
-	// prevents new connections, and existing connections will fail on next I/O.
-	return 0
-}
-
 // ActiveCount returns the total number of active connections.
 func (t *ConnTracker) ActiveCount() int {
 	t.usersMu.RLock()
