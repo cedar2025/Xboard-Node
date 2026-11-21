@@ -47,14 +47,8 @@ jobs:
       - name: Upload xboard-node artifact
         uses: actions/upload-artifact@v4
         with:
-          name: xboard-node-linux-amd64
-          path: xboard-node-linux-amd64
-
-      - name: Upload xbctl artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: xbctl-linux-amd64
-          path: xbctl-linux-amd64
+          name: xboard-node
+          path: xboard-node
 
   build-docker:
     name: Build & Push Docker Image
@@ -107,5 +101,4 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}
           make_latest: ${{ startsWith(github.ref, 'refs/tags/') }}
           files: |
-            dist/xboard-node-linux-amd64
-            dist/xbctl-linux-amd64
+            dist/xboard-node
