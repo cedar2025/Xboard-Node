@@ -28,7 +28,7 @@ require (
 	github.com/libdns/route53 v1.6.0
 	github.com/libdns/tencentcloud v1.4.3
 	github.com/libdns/vultr/v2 v2.0.4
-	github.com/sagernet/sing v0.8.2
+	github.com/sagernet/sing v0.8.12
 	github.com/sagernet/sing-box v1.13.2
 	github.com/shirou/gopsutil/v4 v4.26.2
 	github.com/xtls/xray-core v1.260327.0
@@ -261,6 +261,8 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
-replace github.com/sagernet/sing-box => github.com/cedar2025/sing-box v1.14.0-alpha.2.0.20260316103356-2e665cb7e295
+replace github.com/sagernet/sing-box => github.com/exgphe/sing-box v0.0.0-20261121211233-84b72d1d9283
 
 replace github.com/xtls/xray-core => github.com/cedar2025/Xray-core v0.0.0-20260409213332-f47935539965
+
+replace github.com/sagernet/sing-quic => github.com/exgphe/sing-quic v0.0.0-20261121210939-9977a4b37ba1
