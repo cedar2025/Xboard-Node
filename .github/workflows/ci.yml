@@ -1,11 +1,7 @@
 name: CI
 
 on:
-  push:
-    branches: [main, master, dev]
-    tags: ["v*"]
-  pull_request:
-    branches: [main, master]
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
