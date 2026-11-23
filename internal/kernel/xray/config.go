@@ -95,6 +95,9 @@ func outboundConfigToXray(oc model.OutboundConfig) M {
 	if len(oc.Settings) > 0 {
 		m["settings"] = oc.Settings
 	}
+		if len(oc.StreamSettings) > 0 {
+		m["streamSettings"] = oc.StreamSettings
+	}
 	if oc.ProxyTag != "" {
 		m["proxySettings"] = M{"tag": oc.ProxyTag}
 	}
@@ -180,8 +183,8 @@ func mergeCustomXrayRouting(cfg M, customRouting map[string]any) {
 	}
 }
 
-func xrayLogLevel(singboxLevel string) string {
-	switch singboxLevel {
+func xrayLogLevel(level string) string {
+	switch level {
 	case "trace", "debug":
 		return "debug"
 	case "info":
@@ -414,7 +417,10 @@ func buildHysteria(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel
 			"email": userEmail(u.ID),
 		})
 	}
-	base["settings"] = M{"clients": clients}
+	// New core (upstream main) requires "version": 2 in the hysteria
+	// inbound SETTINGS; without it startup fails with "version != 2".
+	// The guard above guarantees nc.Version == 2 here.
+	base["settings"] = M{"version": nc.Version, "clients": clients}
 
 	ss := M{
 		"network": "hysteria",
@@ -443,10 +449,16 @@ func buildHysteria(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel
 			"certificate": []string{string(tc.CertPEM)},
 			"key":         []string{string(tc.KeyPEM)},
 		}
-		ss["tlsSettings"] = M{
+		tlsSettings := M{
 			"certificates": []M{tlsCert},
 			"alpn":         []string{"h3"},
 		}
+		// ECH server-side: same static key as the VLESS/TLS path
+		// (extractECHServerKeys reads tls_settings.ech.key / key_path).
+		if echKeys := extractECHServerKeys(nc.TLSSettings); echKeys != "" {
+			tlsSettings["echServerKeys"] = echKeys
+		}
+		ss["tlsSettings"] = tlsSettings
 	} else {
 		nlog.Core().Warn("hysteria requires TLS certificate files; configure cert_mode (self, file, http, dns, or content)")
 	}
@@ -577,19 +589,21 @@ func applyStreamSettings(base M, nc *model.NodeSpec, tc kernel.TLSCert) {
 				tlsSettings["echServerKeys"] = echKeys
 			}
 		}
+
+		// 核心修改：只有当有证书时，才写入 security 和 tlsSettings
 		if tc.HasCert() {
 			tlsCert := M{
 				"certificate": []string{string(tc.CertPEM)},
 				"key":         []string{string(tc.KeyPEM)},
 			}
 			tlsSettings["certificates"] = []M{tlsCert}
-		} else {
-			// Fallback placeholder for auto-TLS environments.
-			// Xray allows empty certificates array in more cases than sing-box,
-			// but providing a placeholder helps documentation.
+			
+			// 只有在这里才设置 security 为 "tls"
+			ss["security"] = "tls"
+			ss["tlsSettings"] = tlsSettings
 		}
-		ss["security"] = "tls"
-		ss["tlsSettings"] = tlsSettings
+		// 如果没有证书，上述代码块不执行，ss["security"] 保持默认值（即 "none"）
+
 	} else if nc.TLS == 2 {
 		ss["security"] = "reality"
 		ss["realitySettings"] = buildRealitySettings(nc)
@@ -684,7 +698,7 @@ func buildRouting(rules []model.RouteRule, customRouteRules []model.CustomRouteR
 	}
 
 	return M{
-		"domainStrategy": "AsIs",
+		"domainStrategy": "IPIfNonMatch",
 		"rules":          xrayRules,
 	}
 }

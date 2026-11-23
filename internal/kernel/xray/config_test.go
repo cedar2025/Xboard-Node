@@ -1,15 +1,24 @@
 package xray
 
 import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"math/big"
 	"testing"
+	"time"
 
 	"github.com/cedar2025/xboard-node/internal/config"
 	"github.com/cedar2025/xboard-node/internal/kernel"
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/panel"
+	"github.com/xtls/xray-core/infra/conf/serial"
 )
 
 var testKernelCfg = config.KernelConfig{
@@ -25,6 +34,34 @@ var testUsersPanel = []panel.User{
 var testUsers = model.UserSpecsFromPanel(testUsersPanel)
 
 func testNodeSpec(nc *panel.NodeConfig) *model.NodeSpec { return model.NodeSpecFromPanel(nc) }
+
+// testSelfSignedCert returns a real PEM cert+key pair so the built config
+// also survives the core's TLS parsing (fake "CERT" bytes do not).
+func testSelfSignedCert(t *testing.T) (certPEM, keyPEM []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		DNSNames:     []string{"test.example.com"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM
+}
 
 func testRouteRules(r []panel.RouteRule) []model.RouteRule {
 	if r == nil {
@@ -570,5 +607,67 @@ func TestExtractECHServerKeys(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.expect)
 			}
 		})
+	}
+}
+
+func TestBuildConfig_Hysteria_ParsesOnNewCore(t *testing.T) {
+	// Regression test for node 62 (2026-11-22): the new xray-core
+	// (upstream main, v26.11.9-based) requires "version": 2 in the
+	// hysteria inbound SETTINGS, not just in streamSettings'
+	// hysteriaSettings. Without it the core rejects the config at
+	// startup: "failed to build inbound handler for protocol
+	// hysteria > version != 2". Parse the built config through the
+	// core's own JSON loader, the same call the kernel uses at Start.
+	certPEM, keyPEM := testSelfSignedCert(t)
+	nc := &panel.NodeConfig{
+		Protocol:   "hysteria",
+		ServerPort: 443,
+		Version:    2,
+	}
+	cfg := buildConfig(testKernelCfg, testNodeSpec(nc), testUsers, kernel.TLSCert{CertPEM: certPEM, KeyPEM: keyPEM})
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal built config: %v", err)
+	}
+	if _, err := serial.LoadJSONConfig(bytes.NewReader(data)); err != nil {
+		t.Fatalf("new core rejected built hysteria config: %v", err)
+	}
+}
+
+func TestBuildConfig_Hysteria_ECH(t *testing.T) {
+	// Raw base64 ECH KEYS payload, as delivered by the panel
+	// (tls_settings.ech.key, no PEM armor).
+	rawKeys := base64.StdEncoding.EncodeToString([]byte{0x00, 0x20, 0xDE, 0xAD, 0xBE, 0xEF})
+
+	nc := &panel.NodeConfig{
+		Protocol:   "hysteria",
+		ServerPort: 443,
+		Version:    2,
+		TLSSettings: map[string]interface{}{
+			"ech": map[string]interface{}{
+				"enabled": true,
+				"key":     rawKeys,
+			},
+		},
+	}
+	cfg := buildConfig(testKernelCfg, testNodeSpec(nc), testUsers, kernel.TLSCert{CertPEM: []byte("CERT"), KeyPEM: []byte("KEY")})
+	tlsSettings := cfg["inbounds"].([]M)[0]["streamSettings"].(M)["tlsSettings"].(M)
+	if got := tlsSettings["echServerKeys"]; got != rawKeys {
+		t.Errorf("echServerKeys = %v, want %q", got, rawKeys)
+	}
+
+	// ECH disabled: the inbound still builds, without echServerKeys.
+	nc2 := &panel.NodeConfig{
+		Protocol:   "hysteria",
+		ServerPort: 443,
+		Version:    2,
+		TLSSettings: map[string]interface{}{
+			"ech": map[string]interface{}{"enabled": false, "key": rawKeys},
+		},
+	}
+	cfg2 := buildConfig(testKernelCfg, testNodeSpec(nc2), testUsers, kernel.TLSCert{CertPEM: []byte("CERT"), KeyPEM: []byte("KEY")})
+	tlsSettings2 := cfg2["inbounds"].([]M)[0]["streamSettings"].(M)["tlsSettings"].(M)
+	if _, ok := tlsSettings2["echServerKeys"]; ok {
+		t.Errorf("echServerKeys should be absent when ECH is disabled")
 	}
 }

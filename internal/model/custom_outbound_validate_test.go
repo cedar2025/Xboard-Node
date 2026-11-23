@@ -18,7 +18,7 @@ func TestValidateCustomOutbounds(t *testing.T) {
 				{Tag: "warp", Protocol: "wireguard", Settings: map[string]any{"server": "1.1.1.1", "server_port": 2408, "private_key": "pk"}},
 				{Tag: "proxy", Protocol: "socks", ProxyTag: "warp", Settings: map[string]any{"server": "2.2.2.2", "server_port": 1080}},
 			},
-			kernel: "singbox",
+			kernel: "xray",
 		},
 		{
 			name:      "valid native vmess settings preserved",

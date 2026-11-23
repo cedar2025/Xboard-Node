@@ -19,28 +19,6 @@ func OutboundSupportMatrix() map[string]KernelOutboundSupport {
 				"proxy_tag",
 			},
 		},
-		"singbox": {
-			Protocols: []string{
-				"vmess",
-				"vless",
-				"trojan",
-				"shadowsocks",
-				"socks",
-				"http",
-				"wireguard",
-				"tuic",
-				"hysteria2",
-				"anytls",
-				"naive",
-				"mieru",
-			},
-			Features: []string{
-				"tag",
-				"protocol",
-				"settings",
-				"proxy_tag",
-			},
-		},
 	}
 }
 

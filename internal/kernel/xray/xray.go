@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -572,7 +573,7 @@ func toMemoryUser(proto string, nc *model.NodeSpec, u model.UserSpec) (*protocol
 	case "shadowsocks":
 		if strings.HasPrefix(nc.Cipher, "2022-blake3-") {
 			// 2022-blake3 multi-user mode
-			mu.Account = &ss2022.MemoryAccount{Key: u.UUID}
+			mu.Account = &ss2022.MemoryAccount{Key: decodeSS2022Key(u.UUID)}
 		} else {
 			// Traditional SS — build via getCipher path
 			ct := parseCipherType(nc.Cipher)
@@ -602,10 +603,23 @@ func parseCipherType(cipher string) shadowsocks.CipherType {
 	case "xchacha20-ietf-poly1305", "xchacha20-poly1305":
 		return shadowsocks.CipherType_XCHACHA20_POLY1305
 	case "none", "plain":
-		return shadowsocks.CipherType_NONE
+		// Upstream removed CipherType_NONE (and NoneCipher) after v26.3.27;
+		// UNKNOWN makes AsAccount fail loudly instead of silently
+		// mismatching the cipher.
+		return shadowsocks.CipherType_UNKNOWN
 	default:
 		return shadowsocks.CipherType_AES_256_GCM
 	}
+}
+
+// decodeSS2022Key mirrors xray-core's shadowsocks_2022 Account.AsAccount:
+// the panel key is base64; store the decoded bytes, falling back to the raw
+// string when it is not valid base64.
+func decodeSS2022Key(key string) []byte {
+	if raw, err := base64.StdEncoding.DecodeString(key); err == nil {
+		return raw
+	}
+	return []byte(key)
 }
 
 // trojanHexSha224 computes the SHA-224 hex key used by trojan protocol.
@@ -634,7 +648,7 @@ func (x *Xray) ensureGeoData(nc *model.NodeSpec) {
 		return
 	}
 	dir := x.cfg.GeoDataDir
-	if err := geodata.Ensure(dir, needIP, needSite, "xray"); err != nil {
+	if err := geodata.Ensure(dir, needIP, needSite); err != nil {
 		nlog.Core().Warn("geo database unavailable", "error", err)
 	}
 	os.Setenv("XRAY_LOCATION_ASSET", dir)

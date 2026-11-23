@@ -21,7 +21,7 @@ CLI_PATH="/usr/local/bin/xbctl"
 INSTALLER_COPY_PATH="${INSTALL_ROOT}/install.sh"
 CLI_BINARY_SOURCE=""
 DEFAULT_HEALTH_PORT=65530
-DEFAULT_KERNEL="singbox"
+DEFAULT_KERNEL="xray"
 DEFAULT_MODE="node"
 DEFAULT_ACTION="install"
 DEFAULT_RELEASE_VERSION="latest"
@@ -185,7 +185,7 @@ usage() {
 
   OPTIONAL:
     --node-type, -T     Explicit node type for node mode
-    --kernel, -k        singbox or xray (default: singbox)
+    --kernel, -k        xray (default: xray)
     --version           Release version or latest (default: latest)
     --binary            Use a local xboard-node binary path instead of downloading
     --xbctl-binary      Use a local xbctl binary path instead of downloading
@@ -293,7 +293,6 @@ parse_args() {
     fi
 
     case "$KERNEL_TYPE" in
-        singbox|SingBox|SINGBOX) KERNEL_TYPE="singbox" ;;
         xray|Xray|XRAY) KERNEL_TYPE="xray" ;;
         *) ;;
     esac
@@ -425,9 +424,9 @@ validate_install_request() {
         HEALTH_ENABLED=0
     fi
     case "$KERNEL_TYPE" in
-        singbox|xray) ;;
+        xray) ;;
         *)
-            log_error "Kernel must be singbox or xray"
+            log_error "Kernel must be xray"
             exit 1
             ;;
     esac
@@ -548,7 +547,7 @@ render_config() {
         config init
         --mode "$MODE"
         --panel-url "$PANEL_URL"
-        --kernel "${KERNEL_TYPE:-singbox}"
+        --kernel "${KERNEL_TYPE:-xray}"
         --health-port "${HEALTH_PORT:-0}"
         --token "$TOKEN"
         --version "$RELEASE_VERSION"

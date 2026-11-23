@@ -94,7 +94,7 @@ type NodeConfig struct {
 	Routes          []RouteRule            `json:"routes"`
 
 	// Kernel settings (Xboard extension)
-	KernelType       string            `json:"kernel_type,omitempty"`      // "singbox" or "xray"
+	KernelType       string            `json:"kernel_type,omitempty"`      // "xray"
 	KernelLogLevel   string            `json:"kernel_log_level,omitempty"` // "info", "warn", etc.
 	CustomOutbounds  []OutboundConfig  `json:"custom_outbounds,omitempty"`
 	CustomRoutes     []map[string]any  `json:"custom_routes,omitempty"`
@@ -214,6 +214,7 @@ type OutboundConfig struct {
 	Tag      string         `json:"tag"`                 // Unique tag for routing
 	Protocol string         `json:"protocol"`            // vmess, vless, shadowsocks, wireguard, etc.
 	Settings map[string]any `json:"settings,omitempty"`  // Protocol-specific settings
+	StreamSettings map[string]any `json:"streamSettings,omitempty"`  // Protocol-specific settings
 	ProxyTag string         `json:"proxy_tag,omitempty"` // Chain proxy: next outbound tag
 }
 

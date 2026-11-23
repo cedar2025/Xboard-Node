@@ -61,6 +61,7 @@ func NodeSpecFromPanel(nc *panel.NodeConfig) *NodeSpec {
 			Tag:      outbound.Tag,
 			Protocol: outbound.Protocol,
 			Settings: cloneAnyMap(outbound.Settings),
+			StreamSettings: cloneAnyMap(outbound.StreamSettings),
 			ProxyTag: outbound.ProxyTag,
 		})
 	}
@@ -200,6 +201,7 @@ func (n *NodeSpec) ToPanel() *panel.NodeConfig {
 			Tag:      outbound.Tag,
 			Protocol: outbound.Protocol,
 			Settings: cloneAnyMap(outbound.Settings),
+			StreamSettings: cloneAnyMap(outbound.StreamSettings),
 			ProxyTag: outbound.ProxyTag,
 		})
 	}

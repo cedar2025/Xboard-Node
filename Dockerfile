@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 RUN apk add --no-cache git
 
@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 go build -ldflags "-s -w \
     -tags "with_quic with_utls with_wireguard with_clash_api" \
     -o xboard-node ./cmd/xboard-node
 
-# Runtime stage — sing-box & xray-core are embedded as Go libraries
+# Runtime stage — xray-core is embedded as a Go library
 FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates tzdata
@@ -33,14 +33,14 @@ WORKDIR /etc/xboard-node
 #     -e apiHost=https://panel.example.com \
 #     -e apiKey=YOUR_TOKEN \
 #     -e nodeID=1 \
-#     ghcr.io/cedar2025/xboard-node:latest
+#     ghcr.io/qiuzi/xboard-node:latest
 #
 # Supported env vars:
 #   apiHost  / API_HOST    → panel URL
 #   apiKey   / API_KEY     → server token
 #   nodeID   / NODE_ID     → node ID
 #   nodeType / NODE_TYPE   → node type (optional)
-#   kernel   / KERNEL_TYPE → singbox (default) or xray
+#   kernel   / KERNEL_TYPE → xray
 #   domain   / DOMAIN      → TLS domain (enables auto_tls)
 #   certFile / CERT_FILE   → TLS cert path
 #   keyFile  / KEY_FILE    → TLS key path
